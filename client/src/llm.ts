@@ -35,7 +35,15 @@ export async function requestPlan(opts: {
 
   if (!resp.ok) {
     const txt = await resp.text();
-    throw new Error(txt);
+    let msg = `请求失败 (${resp.status})`;
+    try {
+      const json = JSON.parse(txt);
+      if (json.detail) msg += ": " + (typeof json.detail === "string" ? json.detail : JSON.stringify(json.detail));
+      else if (json.error) msg += ": " + json.error;
+    } catch {
+      if (txt) msg += ": " + txt;
+    }
+    throw new Error(msg);
   }
 
   const data = await resp.json();

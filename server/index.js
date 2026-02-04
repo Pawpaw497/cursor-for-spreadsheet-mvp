@@ -74,7 +74,7 @@ app.post("/api/plan", async (req, res) => {
     }
 
     const apiKey = process.env.OPENROUTER_API_KEY;
-    const model = process.env.MODEL || "openai/gpt-4.1-mini";
+    const model = process.env.MODEL || "google/gemini-flash-1.5";
     if (!apiKey) return res.status(500).json({ error: "OPENROUTER_API_KEY missing" });
 
     const llmPrompt = buildPrompt({ userPrompt: prompt, schema, sampleRows });
