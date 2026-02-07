@@ -16,6 +16,7 @@ This is a runnable demo that implements a **Cursor-like Cmd+K workflow** for a s
    - `transform_column`: clean/transform an existing column (trim/lower/upper/replace/parse_date)
 
 3) Diff preview (added columns + modified columns)
+4) Undo last Apply (snapshot-based)
 
 ### Not implemented (by design)
 - Collaborative editing
