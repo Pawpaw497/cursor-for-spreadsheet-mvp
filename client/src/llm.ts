@@ -9,28 +9,31 @@ const PlanSchema = z.object({
         action: z.literal("add_column"),
         name: z.string().min(1),
         expression: z.string().min(1),
-        note: z.string().optional()
+        note: z.string().nullish().transform((v) => v ?? undefined)
       }),
       z.object({
         action: z.literal("transform_column"),
         column: z.string().min(1),
         transform: z.enum(["trim", "lower", "upper", "replace", "parse_date"]),
-        args: z.record(z.any()).optional(),
-        note: z.string().optional()
+        args: z.record(z.any()).nullish().transform((v) => v ?? undefined),
+        note: z.string().nullish().transform((v) => v ?? undefined)
       })
     ])
   ).min(1)
 });
 
+export type ModelSource = "cloud" | "local";
+
 export async function requestPlan(opts: {
   prompt: string;
   schema: SchemaCol[];
   sampleRows: Record<string, any>[];
+  modelSource?: ModelSource;
 }): Promise<Plan> {
   const resp = await fetch("http://localhost:8787/api/plan", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(opts)
+    body: JSON.stringify({ ...opts, modelSource: opts.modelSource ?? "cloud" })
   });
 
   if (!resp.ok) {

@@ -38,6 +38,8 @@ export default function App() {
   const [plan, setPlan] = useState<Plan | null>(null);
   const [diff, setDiff] = useState<Diff | null>(null);
   const [prompt, setPrompt] = useState("");
+  const [modelSource, setModelSource] = useState<"cloud" | "local">("cloud");
+  const [schemaExpanded, setSchemaExpanded] = useState(false);
   const [status, setStatus] = useState<string>("Ready");
   const promptRef = useRef<HTMLTextAreaElement>(null);
 
@@ -56,10 +58,10 @@ export default function App() {
   }, []);
 
   async function onGenerate() {
-    setStatus("Calling LLM…");
+    setStatus(modelSource === "cloud" ? "Calling cloud LLM…" : "Calling local LLM…");
     try {
       const sampleRows = rows.slice(0, 10);
-      const nextPlan = await requestPlan({ prompt, schema, sampleRows });
+      const nextPlan = await requestPlan({ prompt, schema, sampleRows, modelSource });
       setPlan(nextPlan);
 
       // compute diff preview without committing
@@ -128,6 +130,26 @@ export default function App() {
         <div className="side-panel">
           <div className="panel-section ai-panel">
             <div style={{ fontWeight: 600, marginBottom: 8 }}>AI Edit</div>
+            <div className="model-switch">
+              <label>
+                <input
+                  type="radio"
+                  name="modelSource"
+                  checked={modelSource === "cloud"}
+                  onChange={() => setModelSource("cloud")}
+                />
+                云端
+              </label>
+              <label>
+                <input
+                  type="radio"
+                  name="modelSource"
+                  checked={modelSource === "local"}
+                  onChange={() => setModelSource("local")}
+                />
+                本地 (qwen2.5:7b)
+              </label>
+            </div>
             <textarea
               ref={promptRef}
               value={prompt}
@@ -158,10 +180,21 @@ export default function App() {
             )}
           </div>
 
-          <div className="panel-section">
-            <div style={{ fontWeight: 600, marginBottom: 8 }}>Schema</div>
-            <pre>{JSON.stringify(schema, null, 2)}</pre>
-            <div className="small">This schema + sample rows are what the LLM sees.</div>
+          <div className="panel-section schema-section">
+            <button
+              type="button"
+              className="schema-toggle"
+              onClick={() => setSchemaExpanded((v) => !v)}
+            >
+              <span className="schema-toggle-icon">{schemaExpanded ? "▼" : "▶"}</span>
+              Schema
+            </button>
+            {schemaExpanded && (
+              <>
+                <pre>{JSON.stringify(schema, null, 2)}</pre>
+                <div className="small">This schema + sample rows are what the LLM sees.</div>
+              </>
+            )}
           </div>
         </div>
       </div>

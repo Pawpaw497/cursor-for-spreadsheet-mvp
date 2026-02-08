@@ -41,6 +41,11 @@ build/Release
 node_modules/
 jspm_packages/
 
+# Python virtual environments
+.venv/
+venv/
+venv.bak/
+
 # Snowpack dependency directory (https://snowpack.dev/)
 web_modules/
 
@@ -65,10 +70,12 @@ web_modules/
 # Yarn Integrity file
 .yarn-integrity
 
-# dotenv environment variable files
+# dotenv environment variable files (含密钥，勿提交)
 .env
 .env.*
 !.env.example
+example.env
+py.env
 
 # parcel-bundler cache (https://parceljs.org/)
 .cache
@@ -141,3 +148,8 @@ vite.config.ts.timestamp-*
 .vite/
 
 /.history
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride

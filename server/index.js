@@ -66,42 +66,63 @@ ${userPrompt}
 `.trim();
 }
 
+const OLLAMA_BASE = process.env.OLLAMA_BASE || "http://localhost:11434";
+const LOCAL_MODEL = process.env.LOCAL_MODEL || "qwen2.5:7b";
+
 app.post("/api/plan", async (req, res) => {
   try {
-    const { prompt, schema, sampleRows } = req.body ?? {};
+    const { prompt, schema, sampleRows, modelSource = "cloud" } = req.body ?? {};
     if (!prompt || !schema || !sampleRows) {
       return res.status(400).json({ error: "Missing prompt/schema/sampleRows" });
     }
 
-    const apiKey = process.env.OPENROUTER_API_KEY;
-    const model = process.env.MODEL || "openai/gpt-4.1-mini";
-    if (!apiKey) return res.status(500).json({ error: "OPENROUTER_API_KEY missing" });
-
     const llmPrompt = buildPrompt({ userPrompt: prompt, schema, sampleRows });
+    const messages = [
+      { role: "system", content: "You output strict JSON only." },
+      { role: "user", content: llmPrompt }
+    ];
 
-    const resp = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${apiKey}`,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        model,
-        temperature: 0.1,
-        messages: [
-          { role: "system", content: "You output strict JSON only." },
-          { role: "user", content: llmPrompt }
-        ]
-      })
-    });
+    let content;
+    if (modelSource === "local") {
+      const resp = await fetch(`${OLLAMA_BASE}/api/chat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: LOCAL_MODEL,
+          messages,
+          stream: false
+        })
+      });
+      if (!resp.ok) {
+        const txt = await resp.text();
+        return res.status(502).json({ error: "Ollama error", detail: txt });
+      }
+      const data = await resp.json();
+      content = data?.message?.content ?? "";
+    } else {
+      const apiKey = process.env.OPENROUTER_API_KEY;
+      const model = process.env.MODEL || "openai/gpt-4.1-mini";
+      if (!apiKey) return res.status(500).json({ error: "OPENROUTER_API_KEY missing" });
 
-    if (!resp.ok) {
-      const txt = await resp.text();
-      return res.status(502).json({ error: "OpenRouter error", detail: txt });
+      const resp = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${apiKey}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          model,
+          temperature: 0.1,
+          messages
+        })
+      });
+      if (!resp.ok) {
+        const txt = await resp.text();
+        return res.status(502).json({ error: "OpenRouter error", detail: txt });
+      }
+      const data = await resp.json();
+      content = data?.choices?.[0]?.message?.content ?? "";
     }
-
-    const data = await resp.json();
-    const content = data?.choices?.[0]?.message?.content ?? "";
     let parsed;
     try {
       parsed = JSON.parse(content);

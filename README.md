@@ -28,13 +28,16 @@ This is a runnable demo that implements a **Cursor-like Cmd+K workflow** for a s
 
 ## Requirements
 - Node.js 18+
+- Python 3.10+ (if using Python backend)
 
 ## Setup
 
-### 1) Get an OpenRouter API key
+### 1) Get an OpenRouter API key (for cloud models)
 Create a key on OpenRouter and export it.
 
 ### 2) Run the backend
+
+**Option A: Node.js backend**
 ```bash
 cd server
 cp .env.example .env
@@ -42,6 +45,17 @@ cp .env.example .env
 npm install
 npm run dev
 ```
+
+**Option B: Python backend**
+```bash
+cd server_py
+cp .env.example .env
+# edit .env: PROVIDER=ollama or openrouter; set OLLAMA_MODEL / OPENROUTER_API_KEY as needed
+pip install -r requirements.txt
+uvicorn main:app --reload --port 8787
+```
+
+使用 Python 后端且选择**本地模型（Ollama）**时，请先关闭本机 VPN，否则请求 `localhost:11434` 可能被代理导致 503。
 
 Backend runs on http://localhost:8787
 
