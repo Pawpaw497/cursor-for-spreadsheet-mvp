@@ -1,10 +1,37 @@
 html, body { height: 100%; margin: 0; font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
 #root { height: 100%; display: flex; flex-direction: column; }
 .header { display:flex; gap:12px; align-items:center; padding:12px 16px; border-bottom:1px solid #e6e6e6; }
+
+/* 传统表格工具栏 */
+.toolbar { display: flex; align-items: center; gap: 4px; padding: 6px 16px; border-bottom: 1px solid #e6e6e6; background: #fafafa; flex-wrap: wrap; }
+.toolbar-group { display: flex; align-items: center; gap: 2px; }
+.toolbar-divider { width: 1px; height: 24px; background: #ddd; margin: 0 8px; }
+.toolbar-btn { width: 32px; height: 28px; padding: 0; border: 1px solid transparent; border-radius: 4px; background: none; cursor: pointer; font-size: 14px; display: flex; align-items: center; justify-content: center; }
+.toolbar-btn:hover:not(:disabled) { background: #e8e8e8; border-color: #ccc; }
+.toolbar-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.toolbar-btn-icon svg { display: block; }
+.toolbar-select { height: 28px; padding: 0 8px; border: 1px solid #ddd; border-radius: 4px; font-size: 13px; background: white; cursor: pointer; }
+.toolbar-select-narrow { width: 48px; padding: 0 4px; }
+
+.tabs-row { display: flex; align-items: center; gap: 4px; padding: 8px 16px; background: #f5f5f5; border-bottom: 1px solid #e6e6e6; flex-wrap: wrap; }
+.tab { display: flex; align-items: center; border-radius: 8px; overflow: hidden; background: white; border: 1px solid #ddd; }
+.tab.active { border-color: #111; background: #fff; }
+.tab-btn { padding: 6px 12px; border: none; background: none; cursor: pointer; font-size: 14px; }
+.tab-btn:hover { background: #f0f0f0; }
+.tab.active .tab-btn { font-weight: 600; }
+.tab-close { padding: 4px 8px; border: none; background: none; cursor: pointer; font-size: 16px; color: #666; }
+.tab-close:hover { color: #c00; background: #ffe0e0; }
+.tab-add { padding: 6px 12px; font-size: 13px; }
 .kbd { padding: 2px 6px; border: 1px solid #ccc; border-bottom-width: 2px; border-radius: 6px; font-size: 12px; background: #fafafa; }
 .container { flex:1; display:flex; min-height:0; }
 .grid { flex: 1; min-width: 0; }
-.side-panel { width: 420px; min-width: 320px; border-left:1px solid #e6e6e6; display: flex; flex-direction: column; overflow: auto; }
+.side-panel { width: 420px; min-width: 320px; border-left:1px solid #e6e6e6; display: flex; flex-direction: row; overflow: hidden; flex-shrink: 0; transition: width 0.2s ease; }
+.side-panel.collapsed { width: 40px; min-width: 40px; }
+.side-panel.collapsed .panel-content { display: none; }
+.side-panel .panel-toggle { flex-shrink: 0; width: 40px; min-width: 40px; border: none; border-left: 1px solid #e6e6e6; background: #f5f5f5; cursor: pointer; font-size: 14px; color: #666; display: flex; align-items: center; justify-content: center; }
+.side-panel .panel-toggle:hover { background: #eee; color: #333; }
+.side-panel.collapsed .panel-toggle { border-left: none; border-right: 1px solid #e6e6e6; }
+.side-panel .panel-content { flex: 1; display: flex; flex-direction: column; overflow: auto; min-width: 0; }
 .panel-section { padding: 12px 16px; border-bottom: 1px solid #eee; overflow: auto; flex-shrink: 0; }
 .panel-section.ai-panel { flex: 1; min-height: 200px; display: flex; flex-direction: column; gap: 12px; }
 .panel-section:last-child { border-bottom: none; }
@@ -12,11 +39,31 @@ html, body { height: 100%; margin: 0; font-family: system-ui, -apple-system, Seg
 .btn.primary { border-color:#111; }
 textarea { width:100%; min-height: 90px; resize: vertical; padding:10px; border-radius: 10px; border:1px solid #ddd; font-family: inherit; }
 .row { display:flex; gap:10px; align-items:center; }
-.model-switch { display: flex; gap: 16px; align-items: center; margin-bottom: 8px; }
+.ai-tabs { display: flex; gap: 6px; margin: 4px 0 10px; }
+.ai-tab { padding: 4px 10px; border-radius: 999px; border: 1px solid transparent; background: none; cursor: pointer; font-size: 13px; }
+.ai-tab.active { background: #111; color: #fff; border-color: #111; }
+.model-switch { display: flex; flex-direction: column; gap: 8px; margin-bottom: 8px; }
+.model-source-row { display: flex; gap: 16px; align-items: center; }
 .model-switch label { display: flex; align-items: center; gap: 6px; cursor: pointer; font-size: 14px; }
+.model-select { width: 100%; max-width: 200px; padding: 6px 8px; font-size: 13px; border-radius: 4px; border: 1px solid #ccc; }
 .schema-section { margin-top: auto; display: flex; flex-direction: column; gap: 8px; }
 .schema-toggle { display: flex; align-items: center; gap: 6px; width: 100%; padding: 8px 0; border: none; background: none; font-weight: 600; font-size: 14px; cursor: pointer; color: inherit; text-align: left; }
 .schema-toggle:hover { color: #333; }
 .schema-toggle-icon { font-size: 10px; opacity: 0.7; }
 .small { color:#666; font-size: 12px; }
 pre { background:#fafafa; border:1px solid #eee; padding:10px; border-radius: 10px; overflow:auto; }
+/* 行号列灰色背景，与表内容区分 */
+.ag-theme-quartz .row-num-header { background: #e8e8e8 !important; }
+/* 可编辑列头：双击编辑、回车保存 */
+.ag-theme-quartz .editable-header-label { display: block; width: 100%; cursor: text; }
+.ag-theme-quartz .editable-header-input { width: 100%; min-width: 0; padding: 2px 6px; border: 1px solid #1f6feb; border-radius: 2px; font-size: inherit; font-family: inherit; background: #fff; box-sizing: border-box; }
+.ag-theme-quartz .editable-header-input:focus { outline: none; }
+
+/* AI 对话历史 */
+.conversation-section { margin-top: 8px; display: flex; flex-direction: column; gap: 8px; }
+.conversation-list { display: flex; flex-direction: column; gap: 8px; max-height: 260px; overflow: auto; }
+.conversation-item { border-radius: 8px; border: 1px solid #eee; background: #fcfcfc; padding: 8px 10px; }
+.conversation-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; }
+.conversation-prompt { font-size: 13px; color: #333; margin: 4px 0 6px; white-space: pre-wrap; word-break: break-word; }
+.conversation-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; }
+.conversation-btn { padding: 4px 8px; font-size: 12px; border-radius: 6px; }

@@ -1,66 +1,60 @@
 # Cursor for Spreadsheet — MVP
 
-This is a runnable demo that implements a **Cursor-like Cmd+K workflow** for a spreadsheet-like grid:
+基于 **Cmd+K 式工作流** 的表格编辑 Demo：带上下文的自然语言 → LLM 生成**结构化执行计划** → **Diff 预览** → 一键 **Apply** 写回表格。
 
-- Context-aware prompt (sends schema + sample rows)
-- LLM returns a **structured plan**
-- UI shows a **Diff preview**
-- One click **Apply** mutates the grid
+## 功能概览
 
-## What’s included (MVP scope)
+### 已实现（MVP）
+1. **Cmd+K「AI 编辑」弹窗**：输入自然语言，携带当前表结构 + 样本行作为上下文。
+2. **单表计划**（`/api/plan`）：
+   - `add_column`：新增派生列（JS 表达式，可引用 `row`）
+   - `transform_column`：对已有列做清洗（trim / lower / upper / replace / parse_date）
+3. **多表 / 项目计划**（`/api/plan-project`）：
+   - 上述单表能力 + `join_tables`、`create_table`
+4. **Diff 预览**：展示将新增/修改的列。
+5. **一键 Apply**：在浏览器内执行计划并写回表格。
+6. **撤销**：基于快照的「撤销上一次 Apply」。
+7. **Agent 骨架**（供后续 Agent 模式与工具扩展）：`app/agent/` 下已实现 **AgentState**（`state.py`）、**动作枚举**（`actions.py`）、**decision 函数**与 **run_agent_loop**（`decision.py`），可从 `PlanRequest`/`ProjectPlanRequest` 构建初始 state 并跑通「state → decision → action」循环。
 
-### Implemented
-1) Cmd+K "AI Edit" modal  
-2) Two actions:
-   - `add_column`: add a derived column computed from a JS expression over `row`
-   - `transform_column`: clean/transform an existing column (trim/lower/upper/replace/parse_date)
-
-3) Diff preview (added columns + modified columns)
-4) Undo last Apply (snapshot-based)
-
-### Not implemented (by design)
-- Collaborative editing
-- Complex formula engine / full Excel compatibility
-- Multi-sheet lineage graph
-- External data connectors
+### 刻意不做（当前范围）
+- 协同编辑
+- 完整公式引擎 / Excel 兼容
+- 多表血缘图
+- 外部数据源连接
 
 ---
 
-## Requirements
-- Node.js 18+
-- Python 3.10+ (if using Python backend)
+## 环境要求
 
-## Setup
+- **Python 3.10+**（后端）
+- **Node.js 18+**（前端构建）
 
-### 1) Get an OpenRouter API key (for cloud models)
-Create a key on OpenRouter and export it.
+---
 
-### 2) Run the backend
+## 快速开始
 
-**Option A: Node.js backend**
-```bash
-cd server
-cp .env.example .env
-# edit OPENROUTER_API_KEY in .env
-npm install
-npm run dev
-```
+### 1) 配置 LLM
 
-**Option B: Python backend**
+- **云端（OpenRouter）**：在 [OpenRouter](https://openrouter.ai) 创建 API Key。
+- **本地（Ollama）**：安装并启动 [Ollama](https://ollama.ai)，拉取所需模型。
+
+### 2) 启动后端
+
 ```bash
 cd server_py
 cp .env.example .env
-# edit .env: PROVIDER=ollama or openrouter; set OLLAMA_MODEL / OPENROUTER_API_KEY as needed
+# 编辑 .env：设置 OPENROUTER_API_KEY、OLLAMA_MODEL 等
 pip install -r requirements.txt
 uvicorn main:app --reload --port 8787
 ```
 
-使用 Python 后端且选择**本地模型（Ollama）**时，请先关闭本机 VPN，否则请求 `localhost:11434` 可能被代理导致 503。
+后端地址：**http://localhost:8787**
 
-Backend runs on http://localhost:8787
+> 使用本地 Ollama 时，建议关闭本机 VPN，避免请求 `localhost:11434` 被代理导致 503。
 
-### 3) Run the frontend
-In another terminal:
+### 3) 启动前端
+
+新开终端：
 
 ```bash
 cd client
@@ -68,11 +62,11 @@ npm install
 npm run dev
 ```
 
-Open the URL shown by Vite (usually http://localhost:5173).
+在浏览器打开 Vite 给出的地址（一般为 **http://localhost:5173**）。
 
 ---
 
-## Try prompts
+## 示例提示词
 
 - `Add a column total_price = price * quantity`
 - `Transform column email to lowercase`
@@ -82,19 +76,27 @@ Open the URL shown by Vite (usually http://localhost:5173).
 
 ---
 
-## How it works (high level)
+## 架构简述
 
-1) Frontend captures:
-   - column schema
-   - a few sample rows
-   - which range is selected (optional)
-2) Backend asks the LLM to output a strict JSON plan:
-   - `steps[]` of actions
-3) Frontend validates + renders Diff
-4) Apply runs a tiny transform engine in the browser
+1. **前端**：收集当前表 schema、若干样本行、可选选区，发起计划请求。
+2. **后端**：用 LLM 生成**仅含 JSON** 的执行计划（`intent` + `steps[]`），支持多轮消息（`Message` 封装，可选 `build_messages` 多轮对话）。
+3. **前端**：校验计划、渲染 Diff，Apply 时在浏览器内运行内置的转换引擎执行步骤。
+
+### 后端结构（server_py）
+
+- **`app/`**：FastAPI 应用
+  - `api/routes/`：`plan`（单表 / 多表计划）、`export`、`health`、`config`
+  - `services/`：`prompts`（提示词与 `Message` / `build_messages`）、`llm`（Ollama / OpenRouter 调用）
+  - `models/`：请求/响应与 Plan 模型
+  - **`agent/`**：Agent 骨架（状态、动作、决策、循环）
+    - `state.py`：`AgentState`、`TableContext`、`initial_state_from_plan_request` / `from_project_request`
+    - `actions.py`：动作枚举（`call_tool` / `output_plan` / `ask_clarification` / `finish`）及各类 payload
+    - `decision.py`：`decision(state) → (state, action)`、`run_agent_loop(initial_state) → (state, action)`
+- **入口**：`uvicorn main:app`，`main.py` 挂载 `app.main.app`。
 
 ---
 
-## Notes on safety / correctness (demo)
-- For `add_column`, the demo evaluates an expression with `new Function("row", ...)`.
-  This is **not** production-safe. In production you’d use a sandboxed expression language.
+## 安全与正确性（Demo 说明）
+
+- `add_column` 的表达式通过 `new Function("row", ...)` 在浏览器中执行，**不适合生产**；生产环境应使用沙箱表达式或服务端执行。
+- LLM 输出需校验与清洗（当前有 JSON 提取与重试逻辑），不可直接信任。
