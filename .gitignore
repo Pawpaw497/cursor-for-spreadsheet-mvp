@@ -149,7 +149,9 @@ vite.config.ts.timestamp-*
 
 /.history
 
+
 # macOS
 .DS_Store
 .AppleDouble
 .LSOverride
+

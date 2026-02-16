@@ -17,9 +17,9 @@
 |----------------|--------------------------|----------------------------------------|------------|
 | **实现骨架**   | ✅ **已实现**（见第三节 3.5） | **AgentState + 动作枚举 + decision + run_agent_loop** | **高（已落地）** |
 | 执行模式       | 一次生成整份计划         | 多步推理 / 工具调用 / 分步执行与观察   | 高         |
-| 流式与可观测   | 无流式，无中间过程       | 流式输出 + 推理/工具步骤可观测         | 高         |
-| 对话与记忆     | 每次请求独立，无历史     | 多轮对话 + 会话/项目级记忆             | 中         |
-| 澄清与确认     | 歧义时选「最简单」       | 主动询问用户或请求确认                 | 中         |
+| 流式与可观测   | 基础 SSE 已有（`/api/agent-stream`） | 流式输出 + 推理/工具步骤可观测（前端接入中） | 高         |
+| 对话与记忆     | Agent 支持 history / appliedPlansSummary，但前端暂未全面利用 | 多轮对话 + 会话/项目级记忆             | 中         |
+| 澄清与确认     | 已有简单 ask_clarification 触发逻辑   | 更丰富的澄清策略与前端交互             | 中         |
 | 执行与回滚     | 前端一次性 Apply         | 分步执行、校验、失败可回滚或重试       | 中         |
 | 工具与能力     | 无工具，仅靠 prompt     | 读表/统计/校验等工具供 LLM 调用        | 中         |
 | 计划迭代       | 仅 JSON 解析失败重试     | 基于执行结果或校验结果 refinement 循环 | 低         |
@@ -113,8 +113,8 @@
 
 ### 5.1 现状
 
-- `call_ollama` / `call_openrouter` 均为 `stream: False`，一次性返回完整 content。
-- 前端无法看到「正在想什么」「调用了什么工具」「执行到哪一步」。
+- `call_ollama` / `call_openrouter` 仍为非流式 token 输出，但已通过 `/api/agent-stream` 提供基于 AgentState 的 **SSE 事件流**。
+- SSE 事件类型与动作枚举对齐：`tool_call`、`tool_result`、`plan_done`、`finish`、`clarification`，前端尚未完全接入展示。
 
 ### 5.2 目标
 
@@ -124,10 +124,8 @@
 ### 5.3 建议改动
 
 1. **后端**
-   - `server_py/app/services/llm.py`：为 Ollama/OpenRouter 增加 `stream=True` 路径，返回异步生成器（或 async stream）。
-   - 新路由（如 `/api/agent/stream` 或 `/api/plan/stream`）使用 SSE（Server-Sent Events）推送：
-     - 事件类型可区分为：`reasoning`、`tool_call`、`tool_result`、`plan_chunk`、`plan_done`、`error`。
-   - 在 Agent 循环中，每轮 LLM 的 token 流、以及每次 tool 的 name/args/result，都通过 SSE 推给前端。
+   - ✅ 已实现 `/api/agent-stream`（SSE）：基于 Agent 循环按步骤推送 `tool_call`、`tool_result`、`plan_done`、`finish`、`clarification` 事件。
+   - 如需更细粒度的「reasoning / token 级流式」，可在未来引入真正的流式 LLM 输出（当前暂不必做）。
 
 2. **前端**
    - `client/src/llm.ts`：新增 `requestPlanStream()`（或 `requestAgentStream()`），用 `EventSource` 或 `fetch` + 读 stream，解析 SSE。
@@ -143,8 +141,8 @@
 
 ### 6.1 现状
 
-- 每次请求仅带：当前 schema、sample rows、本次 user prompt；无历史对话、无「之前做过什么」。
-- `prompts.py` 中已有 `build_messages` 和多轮 `Message`，但 `plan.py` 只使用 `single_turn_messages`。
+- Agent 接口 `/api/agent` / `/api/agent-stream` 已支持在请求体中携带 `history` 与 `appliedPlansSummary`（`AgentProjectPlanRequest`），后端会在 `initial_state_from_agent_project_request` 中拼进 `AgentState.messages` / `conversation`。
+- 现阶段前端尚未全面利用这些字段构造真正的多轮对话记忆，仅作为基础能力存在。
 
 ### 6.2 目标
 
@@ -154,14 +152,11 @@
 ### 6.3 建议改动
 
 1. **后端**
-   - `plan.py` 或新 Agent 接口：请求体增加可选 `conversation_history: List[{role, content}]` 以及可选的 `session_summary` 或 `applied_plans_summary`。
-   - 在 `prompts.py` 中：
-     - 若存在历史，用 `build_messages(system, turns)` 把历史 turns 拼进 messages；
-     - 在 system 或首条 user 中注入「近期已执行计划」的简短摘要（例如：已添加列 total_price、已对 email 做 lower）。
+   - ✅ 已在 Agent 路由中使用 `AgentProjectPlanRequest`（包含 `history` 与 `appliedPlansSummary`），并在 `initial_state_from_agent_project_request` 中写入 `AgentState.messages` / `conversation` / `applied_plans_summary`。
+   - 后续可考虑在 system 或首条 user 中注入「近期已执行计划」的简短摘要，而不仅仅是保存在 state 内部。
 
 2. **前端**
-   - `App.tsx` 中已有 `conversations` 列表；可扩展为：每次用户提交时，把「上一轮的 (userPrompt, plan, diff)」作为历史传给后端（或只传 summary）。
-   - 请求体增加：`previousTurns` / `appliedPlansSummary`，由前端从 `conversations` 与当前 tables 状态推导。
+   - `App.tsx` 中已有 `conversations` 列表；下一步应在调用 `/api/agent` / `/api/agent-stream` 时，将「上一轮的 (userPrompt, plan, diff)」转为 `history`（user/assistant turns），并把已应用计划摘要写入 `appliedPlansSummary`。
 
 3. **持久化（可选）**
    - 若要做「项目级」记忆：可把 session 或 project 的摘要存 DB/文件，在打开项目时加载，并在每次 Apply 后更新。
@@ -174,7 +169,7 @@
 
 ### 7.1 现状
 
-- Prompt 中写「If ambiguous, choose the simplest reasonable interpretation」，即歧义时模型自行选择，不询问用户。
+- Agent 决策中已加入简单的澄清触发逻辑：在多表场景下，如 Plan 中存在未指定 `table` 的 add_column / transform_column，会返回 ask_clarification，而不是直接输出 plan。
 
 ### 7.2 目标
 
@@ -183,8 +178,8 @@
 ### 7.3 建议改动
 
 1. **后端**
-   - 在 Plan 的 schema 或 Agent 输出协议中，增加一种类型：`clarification`，包含 `question`、`options?`、`context`。
-   - LLM 在无法确定时返回 `clarification` 而不是 `plan`；前端据此弹窗或内联选择，用户选择后再把结果作为新一条 user 消息继续请求。
+   - ✅ 已在 Agent 决策中实现基础版澄清：`_maybe_need_clarification(state, plan)` 会根据多表 + 未指定 table 的步骤生成 `AskClarificationAction`，携带 `question` / `options`（表名列表）/ `context`（歧义步骤说明）。
+   - 后续可以扩展更多澄清场景（如多列同名、复杂 join 条件不明确等），并考虑在 LLM Prompt 中显式鼓励先澄清再执行。
 
 2. **前端**
    - 若响应为 `clarification`：展示问题与选项，用户选择后把答案拼进 prompt 再次请求（或作为 follow-up 消息）。
@@ -269,12 +264,12 @@
    - **decision 函数**（`app/agent/decision.py`）：`decision(state) → (new_state, action)`，组 messages、调 LLM、解析 → OutputPlanAction 或 FinishAction。
    - **Agent 循环**（同文件）：`run_agent_loop(initial_state) → (state, action)`；call_tool 占位 stub 已预留，便于接入真实 tools。
 
-2. **第一阶段（高优先级）**
-   - 引入 **工具集**（get_schema、get_sample、validate_expression 等）与 **LLM 的 tool calling**。
-   - 在骨架上跑通 **Agent 循环**（多轮 LLM + 工具执行）和新路由（如 `/api/agent`）。
+2. **第一阶段（高优先级）** — ✅ **已完成**
+   - ✅ 引入 **工具集**（get_schema、get_sample、validate_expression 等）与 **LLM 的 tool calling**（见 `app/services/tools.py`、`llm.call_llm_with_tools`）。
+   - ✅ 在骨架上跑通 **Agent 循环**（多轮 LLM + 工具执行）和新路由 **`/api/agent`**（请求体同 `plan-project`，返回 plan 或 422/ clarification）。
    - 增加 **流式输出 + SSE**（与动作枚举对齐：`tool_call`、`plan_done`、`clarification` 等），前端展示推理与工具调用过程。
 
-3. **第二阶段（中优先级）**
+3. **第二阶段（中优先级）** — ✅ **已完成**
    - **多轮对话与记忆**：在 AgentState 中加入 conversation / applied_plans_summary，请求体带历史、后端拼进 messages。
    - **澄清/确认**：动作枚举已有 `ask_clarification`，前端处理并再请求。
    - **分步执行与回滚**：后端可执行步骤并校验，可选地支持回滚或 dry-run。
@@ -294,7 +289,7 @@
 | 对话与记忆     | `server_py/app/services/prompts.py`, `api/routes/plan.py`, `client/src/App.tsx`, `llm.ts` |
 | 澄清与确认     | `server_py/app/models/plan.py`(或 agent 响应模型), 新 API 协议, `App.tsx` |
 | 分步执行与回滚 | `server_py` 执行引擎(新), `engine.ts` 或与后端协同, `App.tsx` |
-| 工具与能力     | `server_py/app/services/tools.py`(新), Agent 路由 |
+| 工具与能力     | `server_py/app/services/tools.py`、`/api/agent` |
 | 计划迭代       | Agent 循环内 + 错误反馈协议 |
 | **实现骨架**   | **已实现**：`app/agent/state.py`、`actions.py`、`decision.py`（含 `run_agent_loop`） |
 

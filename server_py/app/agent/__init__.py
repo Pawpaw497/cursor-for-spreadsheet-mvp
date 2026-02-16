@@ -17,6 +17,7 @@ from app.agent.state import (
     TableContext,
     initial_state_from_plan_request,
     initial_state_from_project_request,
+    initial_state_from_agent_project_request,
 )
 
 __all__ = [
@@ -24,6 +25,7 @@ __all__ = [
     "TableContext",
     "initial_state_from_plan_request",
     "initial_state_from_project_request",
+    "initial_state_from_agent_project_request",
     "AgentAction",
     "AgentActionKind",
     "CallToolAction",

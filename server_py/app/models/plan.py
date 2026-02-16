@@ -78,3 +78,15 @@ class ProjectPlanRequest(BaseModel):
 
 class PlanResponse(BaseModel):
     plan: Plan
+
+
+class ConversationTurn(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str
+
+
+class AgentProjectPlanRequest(ProjectPlanRequest):
+    """带历史与已应用计划摘要的 Agent 请求。"""
+
+    history: List[ConversationTurn] = Field(default_factory=list)
+    appliedPlansSummary: Optional[str] = None

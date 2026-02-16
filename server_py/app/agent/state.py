@@ -4,7 +4,13 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Literal, Optional
 
-from app.models.plan import PlanRequest, ProjectPlanRequest, TableInfo
+from app.models.plan import (
+    AgentProjectPlanRequest,
+    ConversationTurn,
+    PlanRequest,
+    ProjectPlanRequest,
+    TableInfo,
+)
 
 
 @dataclass
@@ -37,6 +43,7 @@ class AgentState:
     tables: List[TableContext]
     messages: List[Dict[str, str]]  # {"role": "system"|"user"|"assistant", "content": str}
     applied_plans_summary: Optional[str] = None
+    conversation: List[Dict[str, str]] = field(default_factory=list)
     current_turn: int = 0
     max_turns: int = 10
     user_prompt: str = ""
@@ -52,6 +59,7 @@ class AgentState:
             "tables_count": len(self.tables),
             "messages_count": len(self.messages),
             "applied_plans_summary": self.applied_plans_summary,
+            "conversation_turns": len(self.conversation),
         }
 
 
@@ -83,6 +91,27 @@ def initial_state_from_project_request(req: ProjectPlanRequest) -> AgentState:
     return AgentState(
         tables=tables,
         messages=messages,
+        user_prompt=req.prompt,
+        model_source=req.modelSource or "cloud",
+        cloud_model_id=req.cloudModelId,
+        local_model_id=req.localModelId,
+    )
+
+
+def initial_state_from_agent_project_request(
+    req: AgentProjectPlanRequest,
+) -> AgentState:
+    """从带历史的 Agent 请求构建初始 AgentState。"""
+    tables = [TableContext.from_table_info(t) for t in req.tables]
+    # 历史对话：直接拼进 messages，后续 decision 会继续在其基础上对话
+    history_msgs: List[Dict[str, str]] = [
+        {"role": turn.role, "content": turn.content} for turn in (req.history or [])
+    ]
+    return AgentState(
+        tables=tables,
+        messages=history_msgs,
+        applied_plans_summary=req.appliedPlansSummary,
+        conversation=history_msgs,
         user_prompt=req.prompt,
         model_source=req.modelSource or "cloud",
         cloud_model_id=req.cloudModelId,

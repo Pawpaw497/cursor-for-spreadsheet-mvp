@@ -17,9 +17,10 @@ AgentActionKind = Literal[
 
 @dataclass
 class CallToolPayload:
-    """call_tool 的 payload：工具名与参数。"""
+    """call_tool 的 payload：工具名、参数，及回填给 LLM 的 tool_call_id。"""
     tool_name: str
     tool_args: Dict[str, Any]
+    tool_call_id: Optional[str] = None
 
 
 @dataclass

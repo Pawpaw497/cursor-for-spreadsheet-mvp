@@ -1,6 +1,8 @@
 """Pydantic 模型 / 请求响应 Schema。"""
 from app.models.plan import (
     AddColumnStep,
+    AgentProjectPlanRequest,
+    ConversationTurn,
     CreateTableStep,
     JoinTablesStep,
     Plan,
@@ -14,10 +16,12 @@ from app.models.plan import (
 __all__ = [
     "AddColumnStep",
     "CreateTableStep",
+    "ConversationTurn",
     "JoinTablesStep",
     "Plan",
     "PlanRequest",
     "PlanResponse",
+    "AgentProjectPlanRequest",
     "ProjectPlanRequest",
     "TableInfo",
     "TransformColumnStep",
