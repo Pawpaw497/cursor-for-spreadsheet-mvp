@@ -31,6 +31,9 @@ class Settings:
     )
 
     # LLM - Local (Ollama)
+    AUTO_START_OLLAMA: bool = (
+        os.getenv("AUTO_START_OLLAMA", "1").lower() in ("1", "true", "yes")
+    )
     OLLAMA_BASE: str = os.getenv(
         "OLLAMA_BASE", "http://localhost:11434").rstrip("/")
     OLLAMA_MODEL: str = os.getenv("OLLAMA_MODEL", "qwen2.5:7b")

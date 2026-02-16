@@ -19,7 +19,8 @@ class TableExport(BaseModel):
     model_config = {"populate_by_name": True}
     name: str
     rows: list[dict[str, Any]] = Field(default_factory=list)
-    schema: list[SchemaCol] = Field(default_factory=list, alias="schema")
+    # 使用 schema_ + alias 避免与 BaseModel.schema 方法重名的警告
+    schema_: list[SchemaCol] = Field(default_factory=list, alias="schema")
 
 
 class ExportExcelRequest(BaseModel):
@@ -46,7 +47,7 @@ async def export_excel(req: ExportExcelRequest):
     for t in req.tables:
         sheet_name = _sanitize_sheet_name(t.name)
         ws = wb.create_sheet(title=sheet_name)
-        keys = [c.key for c in t.schema] if t.schema else (
+        keys = [c.key for c in t.schema_] if t.schema_ else (
             list(t.rows[0].keys()) if t.rows else [])
         # 表头
         for col_idx, key in enumerate(keys, start=1):

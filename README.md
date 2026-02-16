@@ -52,7 +52,8 @@ uvicorn main:app --reload --port 8787
 
 后端地址：**http://localhost:8787**
 
-> 使用本地 Ollama 时，建议关闭本机 VPN，避免请求 `localhost:11434` 被代理导致 503。
+- **自动启动本地模型**：默认在启动后端时会检测 Ollama 是否运行；若未运行且已安装 Ollama，会自动执行 `ollama serve`。通过环境变量 `AUTO_START_OLLAMA=0` 可关闭此行为。
+- 使用本地 Ollama 时，建议关闭本机 VPN，避免请求 `localhost:11434` 被代理导致 503。
 
 ### 3) 启动前端
 
