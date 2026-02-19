@@ -43,7 +43,7 @@
 ### 2) 启动后端
 
 ```bash
-cd server_py
+cd server
 cp .env.example .env
 # 编辑 .env：设置 OPENROUTER_API_KEY、OLLAMA_MODEL 等
 pip install -r requirements.txt
@@ -87,7 +87,7 @@ npm run dev
    - 对于 `/api/agent` / `/api/agent-stream`：额外携带历史对话与已应用计划摘要，由 Agent 多轮调用 LLM 与工具，必要时先向用户发起「澄清」再给出计划。
 3. **前端**：校验计划、渲染 Diff，Apply 时在浏览器内运行内置的转换引擎执行步骤（包括 Agent 产出的计划）。
 
-### 后端结构（server_py）
+### 后端结构（server）
 
 - **`app/`**：FastAPI 应用
   - `api/routes/`：

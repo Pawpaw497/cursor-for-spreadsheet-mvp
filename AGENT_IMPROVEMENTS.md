@@ -59,13 +59,13 @@
 
 ### 3.4 建议落点（目录/文件）
 
-- **AgentState**：`server_py/app/agent/state.py`（或 `app/models/agent_state.py`），dataclass 或 TypedDict，字段如：`tables`, `messages`, `applied_plans_summary`, `current_turn`, `max_turns`。
-- **动作枚举**：同文件或 `server_py/app/agent/actions.py`，如 `AgentAction = Literal["call_tool", "output_plan", "ask_clarification", "finish"]`，并可带 payload（tool_name/args、plan、clarification 等）。
-- **decision 函数**：`server_py/app/agent/decision.py`（或 `services/agent.py`），签名如 `async def decision(state: AgentState) -> tuple[AgentState, AgentAction]`，内部组 messages、调 LLM、解析并返回下一动作与更新后的 state。
+- **AgentState**：`server/app/agent/state.py`（或 `app/models/agent_state.py`），dataclass 或 TypedDict，字段如：`tables`, `messages`, `applied_plans_summary`, `current_turn`, `max_turns`。
+- **动作枚举**：同文件或 `server/app/agent/actions.py`，如 `AgentAction = Literal["call_tool", "output_plan", "ask_clarification", "finish"]`，并可带 payload（tool_name/args、plan、clarification 等）。
+- **decision 函数**：`server/app/agent/decision.py`（或 `services/agent.py`），签名如 `async def decision(state: AgentState) -> tuple[AgentState, AgentAction]`，内部组 messages、调 LLM、解析并返回下一动作与更新后的 state。
 
 ### 3.5 已实现情况（与代码同步）
 
-骨架已落地于 **`server_py/app/agent/`**：
+骨架已落地于 **`server/app/agent/`**：
 
 | 项 | 文件 | 说明 |
 |----|------|------|
@@ -82,8 +82,8 @@
 
 ### 4.1 现状
 
-- `server_py/app/api/routes/plan.py`：一次 `call_llm`，期望直接得到完整 Plan JSON。
-- `server_py/app/services/prompts.py`：System prompt 要求「只输出 JSON」，无 tool / function calling。
+- `server/app/api/routes/plan.py`：一次 `call_llm`，期望直接得到完整 Plan JSON。
+- `server/app/services/prompts.py`：System prompt 要求「只输出 JSON」，无 tool / function calling。
 
 ### 4.2 目标
 
@@ -93,8 +93,8 @@
 ### 4.3 建议改动
 
 1. **后端**
-   - 在 `server_py/app/services/llm.py` 中支持 **function calling / tools**（若用 OpenRouter/Ollama，按各自 API 传 `tools` / `tool_choice`）。
-   - 新增 `server_py/app/services/tools.py`（或 `agent/tools/`）：
+   - 在 `server/app/services/llm.py` 中支持 **function calling / tools**（若用 OpenRouter/Ollama，按各自 API 传 `tools` / `tool_choice`）。
+   - 新增 `server/app/services/tools.py`（或 `agent/tools/`）：
      - `get_schema(table?)`、`get_sample_rows(table?, n)`、`get_column_stats(table, column)`；
      - `validate_expression(expression, sample_row)`、`dry_run_step(step, table)` 等。
    - 在 `plan.py` 或新路由（如 `/api/agent`）中实现 **Agent 循环**：
@@ -202,7 +202,7 @@
 ### 8.3 建议改动
 
 1. **后端**
-   - 在 `server_py` 中实现与 `engine.ts` 同构的步骤执行（或复用一份共享的「步骤语义」描述，由后端用 Python 执行）。
+   - 在 `server` 中实现与 `engine.ts` 同构的步骤执行（或复用一份共享的「步骤语义」描述，由后端用 Python 执行）。
    - Agent 工具集中提供 `execute_step(step, table_data)`、`rollback_last_step()`，Agent 在循环中可「执行 → 观察结果 → 决定是否继续/回滚」。
 
 2. **前端**
@@ -227,7 +227,7 @@
 ### 9.3 建议改动
 
 1. **后端**
-   - 在 `server_py/app/services/tools.py` 中实现上述工具，并在 Agent 的 LLM 调用里以 function calling 形式暴露。
+   - 在 `server/app/services/tools.py` 中实现上述工具，并在 Agent 的 LLM 调用里以 function calling 形式暴露。
    - 工具实现可先基于请求里传来的 `schema` / `sampleRows` 或完整 table 数据，不必先接真实 DB。
 
 2. **优先级**：中。与「执行模式」中的工具调用一起做，体验更完整。
@@ -284,12 +284,12 @@
 
 | 修改点           | 主要涉及目录/文件 |
 |------------------|-------------------|
-| 多步推理 + 工具 | `server_py/app/services/llm.py`, `tools.py`(新), `api/routes/plan.py` 或 `agent.py`(新) |
-| 流式与可观测   | `server_py/app/services/llm.py`, 新 SSE 路由, `client/src/llm.ts`, `App.tsx` |
-| 对话与记忆     | `server_py/app/services/prompts.py`, `api/routes/plan.py`, `client/src/App.tsx`, `llm.ts` |
-| 澄清与确认     | `server_py/app/models/plan.py`(或 agent 响应模型), 新 API 协议, `App.tsx` |
-| 分步执行与回滚 | `server_py` 执行引擎(新), `engine.ts` 或与后端协同, `App.tsx` |
-| 工具与能力     | `server_py/app/services/tools.py`、`/api/agent` |
+| 多步推理 + 工具 | `server/app/services/llm.py`, `tools.py`(新), `api/routes/plan.py` 或 `agent.py`(新) |
+| 流式与可观测   | `server/app/services/llm.py`, 新 SSE 路由, `client/src/llm.ts`, `App.tsx` |
+| 对话与记忆     | `server/app/services/prompts.py`, `api/routes/plan.py`, `client/src/App.tsx`, `llm.ts` |
+| 澄清与确认     | `server/app/models/plan.py`(或 agent 响应模型), 新 API 协议, `App.tsx` |
+| 分步执行与回滚 | `server` 执行引擎(新), `engine.ts` 或与后端协同, `App.tsx` |
+| 工具与能力     | `server/app/services/tools.py`、`/api/agent` |
 | 计划迭代       | Agent 循环内 + 错误反馈协议 |
 | **实现骨架**   | **已实现**：`app/agent/state.py`、`actions.py`、`decision.py`（含 `run_agent_loop`） |
 
