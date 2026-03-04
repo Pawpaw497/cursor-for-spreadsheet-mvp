@@ -155,3 +155,10 @@ vite.config.ts.timestamp-*
 .DS_Store
 .AppleDouble
 .LSOverride
+
+# Cursor
+.cursor/
+.cursorrules
+
+server/.env 
+

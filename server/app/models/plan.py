@@ -23,6 +23,61 @@ class TransformColumnStep(BaseModel):
     note: Optional[str] = None
 
 
+class SortTableStep(BaseModel):
+    action: Literal["sort_table"]
+    table: Optional[str] = None
+    column: str
+    order: Literal["ascending", "descending"] = "ascending"
+    note: Optional[str] = None
+
+
+class FilterRowsStep(BaseModel):
+    action: Literal["filter_rows"]
+    condition: str
+    table: Optional[str] = None
+    note: Optional[str] = None
+
+
+class DeleteRowsStep(BaseModel):
+    action: Literal["delete_rows"]
+    condition: str
+    table: Optional[str] = None
+    note: Optional[str] = None
+
+
+class DeduplicateRowsStep(BaseModel):
+    action: Literal["deduplicate_rows"]
+    keys: List[str]
+    keep: Literal["first", "last"] = "first"
+    table: Optional[str] = None
+    note: Optional[str] = None
+
+
+class RenameColumnStep(BaseModel):
+    action: Literal["rename_column"]
+    fromName: str
+    toName: str
+    table: Optional[str] = None
+    note: Optional[str] = None
+
+
+class FillMissingStep(BaseModel):
+    action: Literal["fill_missing"]
+    column: str
+    strategy: Literal["constant", "mean", "median", "mode"]
+    value: Optional[Any] = None
+    table: Optional[str] = None
+    note: Optional[str] = None
+
+
+class CastColumnTypeStep(BaseModel):
+    action: Literal["cast_column_type"]
+    column: str
+    targetType: Literal["number", "string", "date"]
+    table: Optional[str] = None
+    note: Optional[str] = None
+
+
 class JoinTablesStep(BaseModel):
     action: Literal["join_tables"]
     left: str
@@ -42,8 +97,84 @@ class CreateTableStep(BaseModel):
     note: Optional[str] = None
 
 
-Step = Union[AddColumnStep, TransformColumnStep,
-             JoinTablesStep, CreateTableStep]
+class AggregationSpec(BaseModel):
+    """聚合配置，使用 alias \"as\" 暴露字段名。"""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    column: str
+    op: Literal["sum", "avg", "count", "max", "min"]
+    as_: str = Field(alias="as")
+
+
+class AggregateTableStep(BaseModel):
+    action: Literal["aggregate_table"]
+    source: str
+    groupBy: List[str]
+    aggregations: List[AggregationSpec]
+    resultTable: str
+    note: Optional[str] = None
+
+
+class UnionTablesStep(BaseModel):
+    action: Literal["union_tables"]
+    sources: List[str]
+    resultTable: str
+    mode: Literal["strict", "relaxed"] = "relaxed"
+    note: Optional[str] = None
+
+
+class LookupColumnMapping(BaseModel):
+    """lookup 列配置：from -> to。"""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    from_: str = Field(alias="from")
+    to: str
+
+
+class LookupColumnStep(BaseModel):
+    action: Literal["lookup_column"]
+    mainTable: str
+    lookupTable: str
+    mainKey: str
+    lookupKey: str
+    columns: List[LookupColumnMapping]
+    note: Optional[str] = None
+
+
+class DeleteColumnStep(BaseModel):
+    action: Literal["delete_column"]
+    column: str
+    table: Optional[str] = None
+    note: Optional[str] = None
+
+
+class ReorderColumnsStep(BaseModel):
+    action: Literal["reorder_columns"]
+    columns: List[str]
+    table: Optional[str] = None
+    note: Optional[str] = None
+
+
+Step = Union[
+    AddColumnStep,
+    TransformColumnStep,
+    SortTableStep,
+    FilterRowsStep,
+    DeleteRowsStep,
+    DeduplicateRowsStep,
+    RenameColumnStep,
+    FillMissingStep,
+    CastColumnTypeStep,
+    JoinTablesStep,
+    CreateTableStep,
+    AggregateTableStep,
+    UnionTablesStep,
+    LookupColumnStep,
+    DeleteColumnStep,
+    ReorderColumnsStep,
+]
 
 
 class Plan(BaseModel):
@@ -90,3 +221,42 @@ class AgentProjectPlanRequest(ProjectPlanRequest):
 
     history: List[ConversationTurn] = Field(default_factory=list)
     appliedPlansSummary: Optional[str] = None
+
+
+class ProjectPlanByIdRequest(BaseModel):
+    """基于后端 ProjectState 的项目级 Plan 请求，仅携带 prompt 与模型信息。"""
+
+    prompt: str
+    modelSource: Optional[Literal["cloud", "local"]] = "cloud"
+    cloudModelId: Optional[str] = None
+    localModelId: Optional[str] = None
+
+
+class ExecuteProjectPlanRequest(BaseModel):
+    """基于后端 ProjectState 执行 Plan 的请求。"""
+
+    plan: Plan
+
+
+class ExecuteTable(BaseModel):
+    """执行 Plan 时使用的表结构（与前端 TableData 对齐）。"""
+
+    model_config = ConfigDict(populate_by_name=True)
+    name: str
+    rows: List[Dict[str, Any]] = Field(default_factory=list)
+    schema_: List[Dict[str, Any]] = Field(default_factory=list, alias="schema")
+
+
+class ExecutePlanRequest(BaseModel):
+    """无状态执行 Plan 的请求：前端携带当前所有表 + Plan。"""
+
+    plan: Plan
+    tables: List[ExecuteTable] = Field(min_length=1)
+
+
+class ExecutePlanResponse(BaseModel):
+    """执行 Plan 后返回的新表、Diff 以及新建表列表。"""
+
+    tables: Dict[str, ExecuteTable]
+    diff: Dict[str, List[str]]
+    newTables: List[str] = Field(default_factory=list)

@@ -8,8 +8,20 @@ import "ag-grid-community/styles/ag-theme-quartz.css";
 
 import type { CellFormat, Diff, Plan, SchemaCol, TableData } from "./types";
 import { applyPlan, applyProjectPlan, inferSchema } from "./engine";
-import { exportProjectToExcel, fetchConfig, requestPlan, requestProjectPlan } from "./llm";
-import type { ConfigResponse, ModelOption } from "./llm";
+import {
+  exportProjectToExcel,
+  executePlanOnServer,
+  executeProjectPlanById,
+  fetchConfig,
+  fetchSampleTables,
+  fetchSampleTablesWithRetry,
+  fetchChatHistory,
+  requestPlan,
+  requestProjectPlan,
+  requestProjectPlanById,
+  uploadProjectFile
+} from "./llm";
+import type { ChatMessage, ConfigResponse, ModelOption } from "./llm";
 
 type ConversationEntry = {
   id: number;
@@ -21,18 +33,6 @@ type ConversationEntry = {
   modelSource: "cloud" | "local";
   modelId: string | null;
 };
-
-const initialRows = [
-  { name: " Alice ", email: "ALICE@EXAMPLE.COM", price: 12.5, quantity: 2, signup_date: "2025-11-01", phone: "0912-345-678" },
-  { name: "Bob", email: "bob@example.com", price: 5, quantity: 7, signup_date: "2025/12/03", phone: "0912-000-111" },
-  { name: "Cathy", email: "Cathy@Example.Com", price: 99.99, quantity: 1, signup_date: "Dec 5 2025", phone: "0912-999-888" }
-];
-
-const secondTableRows = [
-  { order_id: "O1", customer: "Alice", amount: 25 },
-  { order_id: "O2", customer: "Bob", amount: 35 },
-  { order_id: "O3", customer: "Cathy", amount: 99.99 }
-];
 
 /** Excel 风格列名：0→A, 1→B, …, 26→AA */
 function indexToCol(i: number): string {
@@ -46,6 +46,13 @@ function createTable(name: string, rows: Record<string, any>[]): TableData {
     rows: [...rows],
     schema: inferSchema(rows)
   };
+}
+
+function statusFromErrorMessage(message: string): string {
+  if (message.includes("云端 LLM 鉴权失败")) {
+    return "云端 LLM 鉴权失败：请在设置 OPENROUTER_API_KEY 后重启后端服务，并确认该 Key 在 OpenRouter 控制台中有效且未过期。";
+  }
+  return "Error: " + message;
 }
 
 function formatToCellStyle(fmt: CellFormat): React.CSSProperties {
@@ -138,28 +145,49 @@ function schemaToColDefs(
   schema: SchemaCol[],
   activeTable: string,
   cellFormats: Record<string, CellFormat>,
-  onRenameColumn: (oldKey: string, newKey: string) => void
+  onRenameColumn: (oldKey: string, newKey: string) => void,
+  diff: Diff | null
 ): ColDef[] {
-  const dataCols: ColDef[] = schema.map((c) => ({
-    field: c.key,
-    headerName: c.key,
-    editable: true,
-    flex: 1,
-    minWidth: 140,
-    headerComponent: EditableHeader,
-    headerComponentParams: {
-      displayName: c.key,
-      onSave: (newKey: string) => onRenameColumn(c.key, newKey)
-    },
-    cellStyle: (params) => {
-      const rowIndex = params.rowIndex ?? params.node?.rowIndex ?? undefined;
-      const colId = params.colDef?.field ?? c.key;
-      if (rowIndex == null) return undefined;
-      const key = `${activeTable}:${rowIndex}:${colId}`;
-      const fmt = cellFormats[key];
-      return fmt ? (formatToCellStyle(fmt) as Record<string, string | number>) : undefined;
-    }
-  }));
+  const dataCols: ColDef[] = schema.map((c) => {
+    const isAdded = !!diff && diff.addedColumns.includes(c.key);
+    const isModified = !!diff && diff.modifiedColumns.includes(c.key);
+
+    const headerClass =
+      [
+        isAdded ? "col-header-added" : "",
+        isModified ? "col-header-modified" : ""
+      ]
+        .filter(Boolean)
+        .join(" ") || undefined;
+
+    return {
+      field: c.key,
+      headerName: c.key,
+      editable: true,
+      flex: 1,
+      minWidth: 140,
+      headerComponent: EditableHeader,
+      headerComponentParams: {
+        displayName: c.key,
+        onSave: (newKey: string) => onRenameColumn(c.key, newKey)
+      },
+      headerClass,
+      cellClass: () => {
+        const classes: string[] = [];
+        if (isAdded) classes.push("cell-added");
+        if (isModified) classes.push("cell-modified");
+        return classes;
+      },
+      cellStyle: (params) => {
+        const rowIndex = params.rowIndex ?? params.node?.rowIndex ?? undefined;
+        const colId = params.colDef?.field ?? c.key;
+        if (rowIndex == null) return undefined;
+        const key = `${activeTable}:${rowIndex}:${colId}`;
+        const fmt = cellFormats[key];
+        return fmt ? (formatToCellStyle(fmt) as Record<string, string | number>) : undefined;
+      }
+    };
+  });
   return [ROW_NUM_COL, ...dataCols];
 }
 
@@ -172,8 +200,8 @@ export default function App() {
   };
 
   const [tables, setTables] = useState<Record<string, TableData>>(() => ({
-    Sheet1: createTable("Sheet1", initialRows),
-    Orders: createTable("Orders", secondTableRows)
+    // 初始只提供一个空白表，所有示例数据均从 test-data/sample.xlsx 加载。
+    Sheet1: createTable("Sheet1", [])
   }));
   const [activeTable, setActiveTable] = useState<string>("Sheet1");
   const [history, setHistory] = useState<Array<Record<string, TableData>>>([]);
@@ -203,8 +231,43 @@ export default function App() {
   );
   const [diffExpanded, setDiffExpanded] = useState(false);
   const [activeAiTab, setActiveAiTab] = useState<"chat" | "history">("chat");
+  const [projectId, setProjectId] = useState<string | null>(null);
+  const [loadSampleLoading, setLoadSampleLoading] = useState(true);
+  const [loadSampleError, setLoadSampleError] = useState<string | null>(null);
   const gridRef = useRef<GridApi | null>(null);
   const promptRef = useRef<HTMLTextAreaElement>(null);
+  const [importLoading, setImportLoading] = useState(false);
+  const [importError, setImportError] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const [chatHistoryError, setChatHistoryError] = useState<string | null>(null);
+  const chatScrollRef = useRef<HTMLDivElement | null>(null);
+
+  const loadSampleTables = useCallback(async () => {
+    setLoadSampleLoading(true);
+    setLoadSampleError(null);
+    try {
+      const res = await fetchSampleTables();
+      const loaded = res.tables;
+      if (!loaded || loaded.length === 0) return;
+      setTables(() => {
+        const next: Record<string, TableData> = {};
+        for (const t of loaded) {
+          next[t.name] = { name: t.name, rows: t.rows, schema: t.schema };
+        }
+        return next;
+      });
+      setProjectId(res.projectId);
+      setActiveTable(loaded[0].name);
+      setStatus("已从 test-data/sample.xlsx 加载示例数据");
+    } catch (e) {
+      const msg = (e as Error)?.message ?? String(e);
+      setLoadSampleError(msg);
+      setStatus("加载示例失败: " + msg);
+    } finally {
+      setLoadSampleLoading(false);
+    }
+  }, []);
 
   const tableNames = Object.keys(tables);
   const currentTable = tables[activeTable];
@@ -235,9 +298,9 @@ export default function App() {
   const colDefs = useMemo(
     () =>
       currentTable
-        ? schemaToColDefs(currentTable.schema, activeTable, cellFormats, onRenameColumn)
+        ? schemaToColDefs(currentTable.schema, activeTable, cellFormats, onRenameColumn, diff)
         : [],
-    [currentTable, activeTable, cellFormats, onRenameColumn]
+    [currentTable, activeTable, cellFormats, onRenameColumn, diff]
   );
 
   const refreshCells = useCallback(() => {
@@ -262,6 +325,119 @@ export default function App() {
     });
   }, []);
 
+  const onImportClick = useCallback(() => {
+    fileInputRef.current?.click();
+  }, []);
+
+  const onFileChange = useCallback(
+    async (e: React.ChangeEvent<HTMLInputElement>) => {
+      const file = e.target.files?.[0];
+      if (!file) {
+        // 允许用户取消选择；清空以便后续选择同一文件仍能触发 change。
+        e.target.value = "";
+        return;
+      }
+      setImportLoading(true);
+      setImportError(null);
+      setStatus("正在导入文件…（若超过 20 秒仍未完成，请检查文件大小或后端日志）");
+      try {
+        const res = await uploadProjectFile(file);
+        const loaded = res.tables;
+        if (!loaded || loaded.length === 0) {
+          setStatus("导入成功，但未识别到任何表数据");
+        } else {
+          setTables(() => {
+            const next: Record<string, TableData> = {};
+            for (const t of loaded) {
+              next[t.name] = { name: t.name, rows: t.rows, schema: t.schema };
+            }
+            return next;
+          });
+          setProjectId(res.projectId);
+          setActiveTable(loaded[0].name);
+          // 清空旧项目相关状态，避免在新项目上复用历史 Plan / Diff。
+          setHistory([]);
+          setPlan(null);
+          setDiff(null);
+          setNewTablesPreview([]);
+          setCellFormats({});
+          setStatus(`已从上传文件导入 ${loaded.length} 张表`);
+        }
+      } catch (err) {
+        const msg = (err as Error)?.message ?? String(err);
+        setImportError(msg);
+        setStatus("导入失败: " + msg);
+      } finally {
+        setImportLoading(false);
+        // 允许选择同一个文件时仍能触发 change。
+        e.target.value = "";
+      }
+    },
+    [setTables]
+  );
+
+  // 启动时从后端 test-data/sample.xlsx 加载示例表格，带重试以应对后端尚未就绪。
+  useEffect(() => {
+    (async () => {
+      setLoadSampleLoading(true);
+      setLoadSampleError(null);
+      try {
+        const res = await fetchSampleTablesWithRetry({
+          maxRetries: 3,
+          delayMs: 1500,
+          timeoutMs: 8000
+        });
+        const loaded = res.tables;
+        if (!loaded || loaded.length === 0) return;
+        setTables(() => {
+          const next: Record<string, TableData> = {};
+          for (const t of loaded) {
+            next[t.name] = { name: t.name, rows: t.rows, schema: t.schema };
+          }
+          return next;
+        });
+        setProjectId(res.projectId);
+        setActiveTable(loaded[0].name);
+        setStatus("已从 test-data/sample.xlsx 加载示例数据");
+      } catch (e) {
+        const msg = (e as Error)?.message ?? String(e);
+        setLoadSampleError(msg);
+        setStatus("加载示例失败，请检查后端是否在 http://localhost:8787 运行");
+      } finally {
+        setLoadSampleLoading(false);
+      }
+    })();
+  }, []);
+
+  useEffect(() => {
+    if (loadSampleLoading || importLoading) {
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const historyMessages = await fetchChatHistory({
+          projectId: projectId ?? undefined,
+          limit: 200
+        });
+        if (cancelled) {
+          return;
+        }
+        setChatMessages(historyMessages);
+        setChatHistoryError(null);
+      } catch (e) {
+        if (cancelled) {
+          return;
+        }
+        const msg = (e as Error)?.message ?? String(e);
+        setChatHistoryError(msg);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId, loadSampleLoading, importLoading]);
+
   const toggleResponseExpanded = useCallback((id: number) => {
     setExpandedResponseIds((prev) => {
       const next = new Set(prev);
@@ -282,6 +458,17 @@ export default function App() {
       })
       .catch(() => setModelOptions(null));
   }, []);
+
+  useEffect(() => {
+    if (activeAiTab !== "chat") {
+      return;
+    }
+    const el = chatScrollRef.current;
+    if (!el) {
+      return;
+    }
+    el.scrollTop = el.scrollHeight;
+  }, [chatMessages, activeAiTab]);
 
   useEffect(() => {
     if (!modelOptions) return;
@@ -305,33 +492,134 @@ export default function App() {
 
   const isProjectMode = tableNames.length > 1;
 
+  function summarizePlanForChat(p: Plan | null): string {
+    if (!p) return "";
+    const lines: string[] = [];
+    if (p.intent) {
+      lines.push(p.intent);
+    }
+    const steps = Array.isArray(p.steps) ? p.steps : [];
+    const maxSteps = 5;
+    steps.slice(0, maxSteps).forEach((step, idx) => {
+      const n = idx + 1;
+      const action = (step as { action?: string }).action ?? "step";
+      let desc = "";
+      // 这里按 action 类型提取尽量简洁的中文描述，便于在 Chat 气泡中快速浏览。
+      if (action === "add_column") {
+        const s = step as { name?: string; expression?: string; table?: string };
+        desc = `在表 ${s.table || "当前表"} 中新增列 ${s.name || ""} = ${s.expression || ""}`;
+      } else if (action === "transform_column") {
+        const s = step as { column?: string; transform?: string; table?: string };
+        desc = `在表 ${s.table || "当前表"} 上对列 ${s.column || ""} 执行 ${s.transform || ""} 转换`;
+      } else if (action === "join_tables") {
+        const s = step as {
+          left?: string;
+          right?: string;
+          leftKey?: string;
+          rightKey?: string;
+          resultTable?: string;
+        };
+        desc = `将表 ${s.left || ""} 与 ${s.right || ""} 按 ${s.leftKey || ""}=${s.rightKey || ""} 进行 join，输出到 ${
+          s.resultTable || ""
+        }`;
+      } else if (action === "create_table") {
+        const s = step as { name?: string; source?: string };
+        desc = `基于 ${s.source || "现有表"} 创建新表 ${s.name || ""}`;
+      } else {
+        desc = JSON.stringify(step);
+      }
+      lines.push(`${n}. ${desc}`);
+    });
+    if (steps.length > maxSteps) {
+      lines.push(`… 还有 ${steps.length - maxSteps} 步未展开`);
+    }
+    return lines.join("\n");
+  }
+
+  function appendChatMessagesFromPlan(promptText: string, nextPlan: Plan | null) {
+    if (!promptText) {
+      return;
+    }
+    const baseSessionId = projectId ?? "default";
+    const now = new Date();
+    const userMessage: ChatMessage = {
+      id: `live-${baseSessionId}-${now.getTime()}-user`,
+      sessionId: baseSessionId,
+      role: "user",
+      content: promptText,
+      createdAt: now.toISOString(),
+      projectId: projectId ?? undefined,
+      source: "live",
+      meta: {
+        modelSource,
+        modelId: modelSource === "cloud" ? cloudModelId : localModelId
+      }
+    };
+    const assistantContent =
+      nextPlan && nextPlan.steps?.length
+        ? summarizePlanForChat(nextPlan)
+        : "已生成 Plan，但内容为空或无法摘要。";
+    const assistantMessage: ChatMessage = {
+      id: `live-${baseSessionId}-${now.getTime()}-assistant`,
+      sessionId: baseSessionId,
+      role: "assistant",
+      content: assistantContent,
+      createdAt: new Date(now.getTime() + 1).toISOString(),
+      projectId: projectId ?? undefined,
+      source: "live",
+      meta: {
+        modelSource,
+        modelId: modelSource === "cloud" ? cloudModelId : localModelId
+      }
+    };
+    setChatMessages((prev) => [...prev, userMessage, assistantMessage]);
+  }
+
   async function onGenerate() {
     setStatus(modelSource === "cloud" ? "Calling cloud LLM…" : "Calling local LLM…");
     try {
       if (isProjectMode) {
         const tablesArr = Object.values(tables);
-        const requestPayload = {
-          prompt,
-          tables: tablesArr.map((t) => ({
-            name: t.name,
-            schema: t.schema,
-            sampleRows: t.rows.slice(0, 10)
-          })),
-          modelSource,
-          cloudModelId: modelSource === "cloud" ? cloudModelId : undefined,
-          localModelId: modelSource === "local" ? localModelId : undefined
-        };
-        const nextPlan = await requestProjectPlan({
-          prompt,
-          tables: tablesArr,
-          modelSource,
-          cloudModelId: modelSource === "cloud" ? cloudModelId : undefined,
-          localModelId: modelSource === "local" ? localModelId : undefined
-        });
+        const usingProjectApi = !!projectId;
+        const requestPayload = usingProjectApi
+          ? {
+              prompt,
+              projectId,
+              modelSource,
+              cloudModelId: modelSource === "cloud" ? cloudModelId : undefined,
+              localModelId: modelSource === "local" ? localModelId : undefined
+            }
+          : {
+              prompt,
+              tables: tablesArr.map((t) => ({
+                name: t.name,
+                schema: t.schema,
+                sampleRows: t.rows.slice(0, 10)
+              })),
+              modelSource,
+              cloudModelId: modelSource === "cloud" ? cloudModelId : undefined,
+              localModelId: modelSource === "local" ? localModelId : undefined
+            };
+        const nextPlan = usingProjectApi
+          ? await requestProjectPlanById({
+              projectId: projectId!,
+              prompt,
+              modelSource,
+              cloudModelId: modelSource === "cloud" ? cloudModelId : undefined,
+              localModelId: modelSource === "local" ? localModelId : undefined
+            })
+          : await requestProjectPlan({
+              prompt,
+              tables: tablesArr,
+              modelSource,
+              cloudModelId: modelSource === "cloud" ? cloudModelId : undefined,
+              localModelId: modelSource === "local" ? localModelId : undefined
+            });
         setPlan(nextPlan);
         const preview = applyProjectPlan(tables, nextPlan);
         setDiff(preview.diff);
         setNewTablesPreview(preview.newTables);
+        appendChatMessagesFromPlan(prompt, nextPlan);
         setConversations((prev) => {
           const nextId = (prev[0]?.id ?? 0) + 1;
           const entry: ConversationEntry = {
@@ -369,6 +657,7 @@ export default function App() {
         const preview = applyPlan(t.rows, t.schema, nextPlan);
         setDiff(preview.diff);
         setNewTablesPreview([]);
+        appendChatMessagesFromPlan(prompt, nextPlan);
         setConversations((prev) => {
           const nextId = (prev[0]?.id ?? 0) + 1;
           const entry: ConversationEntry = {
@@ -386,7 +675,8 @@ export default function App() {
         setStatus("Plan generated. Review Diff, then Apply.");
       }
     } catch (e: unknown) {
-      setStatus("Error: " + String((e as Error)?.message ?? e));
+      const msg = String((e as Error)?.message ?? e);
+      setStatus(statusFromErrorMessage(msg));
     }
   }
 
@@ -405,23 +695,25 @@ export default function App() {
     if (!plan) return;
     setHistory((h) => [...h, clone(tables)]);
 
-    if (isProjectMode) {
-      const result = applyProjectPlan(tables, plan);
-      setTables(result.tables);
-      if (result.newTables.length > 0) {
-        setActiveTable(result.newTables[0]);
+    (async () => {
+      try {
+        const useProjectApi = !!projectId && isProjectMode;
+        const result = useProjectApi
+          ? await executeProjectPlanById({ projectId: projectId!, plan })
+          : await executePlanOnServer({ tables, plan });
+        setTables(result.tables);
+        if (result.newTables.length > 0) {
+          setActiveTable(result.newTables[0]);
+        }
+        setStatus("Applied by backend.");
+        setPrompt("");
+        setPlan(null);
+        setDiff((prev) => result.diff ?? prev);
+        setNewTablesPreview([]);
+      } catch (e: unknown) {
+        setStatus("Apply failed: " + String((e as Error)?.message ?? e));
       }
-    } else {
-      const t = Object.values(tables)[0]!;
-      const out = applyPlan(t.rows, t.schema, plan);
-      setTables({ [t.name]: { ...t, rows: out.rows, schema: out.schema } });
-    }
-
-    setStatus("Applied.");
-    setPrompt("");
-    setPlan(null);
-    setDiff(null);
-    setNewTablesPreview([]);
+    })();
   }
 
   function onAddTable() {
@@ -611,8 +903,19 @@ export default function App() {
         <div className="small">
           <span className="kbd">Cmd</span>+<span className="kbd">K</span> 聚焦 AI 面板
         </div>
-        <div style={{ marginLeft: "auto" }} className="small">
-          {status}
+        <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8 }} className="small">
+          {loadSampleLoading && <span>正在加载示例…</span>}
+          {loadSampleError && !loadSampleLoading && (
+            <button
+              type="button"
+              className="btn"
+              onClick={loadSampleTables}
+              title={loadSampleError}
+            >
+              加载示例
+            </button>
+          )}
+          <span>{status}</span>
         </div>
       </div>
 
@@ -715,8 +1018,24 @@ export default function App() {
           </button>
         </div>
         <div className="toolbar-group" style={{ marginLeft: "auto" }}>
-          <button type="button" className="toolbar-btn" title="下载为 Excel" onClick={onDownloadExcel}>
-            ⬇
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".xlsx,.xls,.csv"
+            style={{ display: "none" }}
+            onChange={onFileChange}
+          />
+          <button
+            type="button"
+            className="toolbar-btn toolbar-btn-text"
+            title="导入 Excel/CSV 文件"
+            onClick={onImportClick}
+            disabled={importLoading}
+          >
+            {importLoading ? "导入中…" : "导入文件"}
+          </button>
+          <button type="button" className="toolbar-btn toolbar-btn-text" title="下载为 Excel" onClick={onDownloadExcel}>
+            导出文件
           </button>
         </div>
       </div>
@@ -845,6 +1164,43 @@ export default function App() {
                     </select>
                   )}
                 </div>
+                <div className="chat-history-container" ref={chatScrollRef}>
+                  {chatHistoryError && (
+                    <div className="small chat-history-error">
+                      历史对话加载失败：{chatHistoryError}
+                    </div>
+                  )}
+                  {!chatHistoryError && chatMessages.length === 0 && (
+                    <div className="small chat-empty-hint">
+                      暂无历史对话，可以在下方输入指令开始与 AI 交互。
+                    </div>
+                  )}
+                  {chatMessages.map((msg) => (
+                    <div
+                      key={msg.id}
+                      className={`chat-message-row chat-message-${msg.role} chat-message-${msg.source}`}
+                    >
+                      <div className="chat-bubble">
+                        <div className="chat-meta small">
+                          <span className="chat-meta-role">
+                            {msg.role === "user"
+                              ? "你"
+                              : msg.role === "assistant"
+                              ? "AI"
+                              : "系统"}
+                          </span>
+                          <span className="chat-meta-time">
+                            {new Date(msg.createdAt).toLocaleString()}
+                          </span>
+                          {msg.source === "history" && (
+                            <span className="chat-tag">历史</span>
+                          )}
+                        </div>
+                        <div className="chat-content">{msg.content || "(空)"}</div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
                 <textarea
                   ref={promptRef}
                   value={prompt}
@@ -880,66 +1236,74 @@ export default function App() {
               </>
             )}
 
-            {activeAiTab === "history" && conversations.length > 0 && (
+            {activeAiTab === "history" && (
               <div className="conversation-section">
-                <div style={{ fontWeight: 600 }}>历史对话</div>
-                <div className="conversation-list">
-                  {conversations.map((item) => (
-                    <div key={item.id} className="conversation-item">
-                      <div className="conversation-header">
-                        <div className="small">
-                          #{item.id} · {item.modelSource === "cloud" ? "云端" : "本地"}{" "}
-                          {item.modelId || ""}
-                        </div>
-                        <div className="small">{item.createdAt}</div>
-                      </div>
-                      <div className="conversation-prompt">
-                        <span className="small">Prompt：</span>{" "}
-                        {item.prompt ? item.prompt : "(空)"}
-                      </div>
-                      <div className="conversation-actions">
-                        <button
-                          type="button"
-                          className="btn conversation-btn"
-                          onClick={() => togglePayloadExpanded(item.id)}
-                        >
-                          {expandedPayloadIds.has(item.id)
-                            ? "隐藏发送给 AI 的内容"
-                            : "查看发送给 AI 的内容"}
-                        </button>
-                        <button
-                          type="button"
-                          className="btn conversation-btn"
-                          onClick={() => toggleResponseExpanded(item.id)}
-                        >
-                          {expandedResponseIds.has(item.id)
-                            ? "隐藏 AI 回复"
-                            : "查看 AI 回复"}
-                        </button>
-                      </div>
-                      {expandedPayloadIds.has(item.id) && (
-                        <pre>{JSON.stringify(item.payload, null, 2)}</pre>
-                      )}
-                      {expandedResponseIds.has(item.id) && item.plan && (
-                        <>
-                          <div style={{ fontWeight: 600, marginTop: 4 }}>Plan</div>
-                          <pre>{JSON.stringify(item.plan, null, 2)}</pre>
-                          {item.diff && (
-                            <>
-                              <div style={{ fontWeight: 600, marginTop: 4 }}>Diff</div>
-                              {renderJsonPreview(
-                                item.diff,
-                                5,
-                                expandedDiffIds.has(item.id),
-                                () => toggleDiffExpanded(item.id)
-                              )}
-                            </>
-                          )}
-                        </>
-                      )}
-                    </div>
-                  ))}
+                <div style={{ fontWeight: 600 }}>历史记录（技术视图）</div>
+                <div className="small" style={{ marginBottom: 6 }}>
+                  此处用于查看每次调用 LLM 的原始 payload / plan / diff，适合调试；
+                  自然语言对话请在上方 Chat 面板查看。
                 </div>
+                {conversations.length === 0 ? (
+                  <div className="small">暂时还没有历史记录。</div>
+                ) : (
+                  <div className="conversation-list">
+                    {conversations.map((item) => (
+                      <div key={item.id} className="conversation-item">
+                        <div className="conversation-header">
+                          <div className="small">
+                            #{item.id} · {item.modelSource === "cloud" ? "云端" : "本地"}{" "}
+                            {item.modelId || ""}
+                          </div>
+                          <div className="small">{item.createdAt}</div>
+                        </div>
+                        <div className="conversation-prompt">
+                          <span className="small">Prompt：</span>{" "}
+                          {item.prompt ? item.prompt : "(空)"}
+                        </div>
+                        <div className="conversation-actions">
+                          <button
+                            type="button"
+                            className="btn conversation-btn"
+                            onClick={() => togglePayloadExpanded(item.id)}
+                          >
+                            {expandedPayloadIds.has(item.id)
+                              ? "隐藏发送给 AI 的内容"
+                              : "查看发送给 AI 的内容"}
+                          </button>
+                          <button
+                            type="button"
+                            className="btn conversation-btn"
+                            onClick={() => toggleResponseExpanded(item.id)}
+                          >
+                            {expandedResponseIds.has(item.id)
+                              ? "隐藏 AI 回复"
+                              : "查看 AI 回复"}
+                          </button>
+                        </div>
+                        {expandedPayloadIds.has(item.id) && (
+                          <pre>{JSON.stringify(item.payload, null, 2)}</pre>
+                        )}
+                        {expandedResponseIds.has(item.id) && item.plan && (
+                          <>
+                            <div style={{ fontWeight: 600, marginTop: 4 }}>Plan</div>
+                            <pre>{JSON.stringify(item.plan, null, 2)}</pre>
+                            {item.diff && (
+                              <>
+                                <div style={{ fontWeight: 600, marginTop: 4 }}>Diff</div>
+                                {renderJsonPreview(
+                                  item.diff,
+                                  5,
+                                  expandedDiffIds.has(item.id),
+                                  () => toggleDiffExpanded(item.id)
+                                )}
+                              </>
+                            )}
+                          </>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -960,8 +1324,8 @@ export default function App() {
                 <pre>{JSON.stringify(currentTable.schema, null, 2)}</pre>
                 <div className="small">
                   {isProjectMode
-                    ? "项目内所有表的 schema + sample rows 会发送给 LLM。"
-                    : "This schema + sample rows are what the LLM sees."}
+                    ? "项目内所有表的 schema 和部分行数据会发送给 LLM。"
+                    : "This schema and a subset of rows are what the LLM sees."}
                 </div>
               </>
             )}

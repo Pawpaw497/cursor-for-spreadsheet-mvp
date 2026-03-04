@@ -23,25 +23,31 @@ class Settings:
     OPENROUTER_MODEL: str = os.getenv("OPENROUTER_MODEL", "openrouter/auto")
     OPENROUTER_MODELS: str = os.getenv(
         "OPENROUTER_MODELS",
-        "openrouter/auto,openrouter/anthropic/claude-3.5-sonnet,openrouter/google/gemini-2.0-flash-001"
+        (
+            "openrouter/auto,"
+            "openrouter/anthropic/claude-3.5-sonnet,"
+            "openrouter/google/gemini-2.0-flash-001"
+        ),
     )
-    OPENROUTER_LABELS: str = os.getenv(
-        "OPENROUTER_LABELS",
-        "Auto,Qwen,Gemini"
-    )
+    OPENROUTER_LABELS: str = os.getenv("OPENROUTER_LABELS", "Auto,Qwen,Gemini")
 
     # LLM - Local (Ollama)
-    AUTO_START_OLLAMA: bool = (
-        os.getenv("AUTO_START_OLLAMA", "1").lower() in ("1", "true", "yes")
-    )
+    AUTO_START_OLLAMA: bool = os.getenv(
+        "AUTO_START_OLLAMA", "0"
+    ).lower() in ("1", "true", "yes")
     OLLAMA_BASE: str = os.getenv(
-        "OLLAMA_BASE", "http://localhost:11434").rstrip("/")
+        "OLLAMA_BASE",
+        "http://localhost:11434",
+    ).rstrip("/")
     OLLAMA_MODEL: str = os.getenv("OLLAMA_MODEL", "qwen2.5:7b")
     OLLAMA_MODELS: str = os.getenv("OLLAMA_MODELS", "qwen2.5:7b")
     OLLAMA_LABELS: str = os.getenv("OLLAMA_LABELS", "qwen2.5:7b")
 
     # App
     APP_TITLE: str = "Cursor for Spreadsheet (Python Server)"
+
+    # Chat history / agent transcripts
+    AGENT_TRANSCRIPTS_DIR: str = os.getenv("AGENT_TRANSCRIPTS_DIR", "")
 
     @property
     def openrouter_model_list(self) -> list[tuple[str, str]]:

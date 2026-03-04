@@ -5,6 +5,7 @@ import json
 from typing import Any, Dict, List
 
 from app.agent.state import TableContext
+from app.services.plan_executor import _safe_globals
 
 # 工具名与实现函数的注册表；(tables, **kwargs) -> str
 _TOOL_IMPLS: Dict[str, Any] = {}
@@ -105,7 +106,7 @@ def validate_expression(
     row = t.sample_rows[0]
     try:
         # 与前端 engine 一致： (row) => expression
-        fn = eval(f"lambda row: ({expression})", {"__builtins__": {}}, {})
+        fn = eval(f"lambda row: ({expression})", _safe_globals(), {})
         fn(row)
         return json.dumps({"ok": True})
     except Exception as e:

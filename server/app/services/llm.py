@@ -1,13 +1,12 @@
 """LLM 调用：Ollama / OpenRouter。"""
 from __future__ import annotations
 
-import json
 from typing import Any
 
 import httpx
 
 from app.config import settings
-from app.services.prompts import Message, extract_json
+from app.services.prompts import Message
 
 # 带 tools 时返回：(content 或 None, tool_calls 或 None)
 # tool_calls: list[dict] 每项 {"id": str, "name": str, "arguments": str}
@@ -35,6 +34,50 @@ def _messages_with_tools_to_payload(messages: list[dict]) -> list[dict]:
                 msg["tool_calls"] = m["tool_calls"]
         out.append(msg)
     return out
+
+
+def _raise_openrouter_error(resp: httpx.Response) -> None:
+    """解析 OpenRouter 错误响应并抛出结构化 RuntimeError。
+
+    对 401/403 等鉴权错误增加 AUTH_ERROR 前缀，便于上层路由区分并返回更友好的提示。
+
+    Args:
+        resp: OpenRouter HTTP 响应对象。
+
+    Raises:
+        RuntimeError: 总是抛出，消息中包含精简的人类可读文案和原始响应片段。
+    """
+    status = resp.status_code
+    body_text = resp.text or "<empty body>"
+
+    error_code: Any | None = None
+    error_message: str | None = None
+
+    try:
+        data = resp.json()
+        if isinstance(data, dict) and isinstance(data.get("error"), dict):
+            err = data["error"]
+            error_code = err.get("code")
+            if isinstance(error_code, dict):
+                # 极端情况下 code 也是嵌套结构，这里做一次保护性展开。
+                error_code = err.get("code", {}).get("code")
+            if isinstance(err.get("message"), str):
+                error_message = err["message"]
+    except Exception:
+        data = None  # noqa: F841  # 仅用于调试时临时打印，不在这里使用
+
+    human_detail = error_message or body_text
+    base_msg = f"OpenRouter HTTP {status}: {human_detail}"
+
+    # 针对典型鉴权错误增加前缀，后续路由可据此返回更友好的中文提示。
+    is_auth_error = status in (401, 403)
+    if isinstance(error_code, (int, str)) and str(error_code) in {"401", "403"}:
+        is_auth_error = True
+
+    if is_auth_error:
+        raise RuntimeError(f"AUTH_ERROR: {base_msg}. Raw: {body_text}")
+
+    raise RuntimeError(f"{base_msg}. Raw: {body_text}")
 
 
 def _parse_tool_calls_from_response(raw: list[dict] | None) -> list[dict] | None:
@@ -76,12 +119,14 @@ async def call_openrouter(api_key: str, model: str, messages: list[Message]) -> 
         "temperature": 0.1,
         "messages": _messages_to_payload(messages),
     }
-    headers = {"Authorization": f"Bearer {api_key}",
-               "Content-Type": "application/json"}
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
     async with httpx.AsyncClient(timeout=60) as client:
         r = await client.post(url, headers=headers, json=payload)
         if r.status_code >= 400:
-            raise RuntimeError(f"OpenRouter error: {r.text}")
+            _raise_openrouter_error(r)
         data = r.json()
         return data["choices"][0]["message"]["content"]
 
@@ -101,12 +146,14 @@ async def call_openrouter_with_tools(
         "tools": tools,
         "tool_choice": "auto",
     }
-    headers = {"Authorization": f"Bearer {api_key}",
-               "Content-Type": "application/json"}
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
     async with httpx.AsyncClient(timeout=90) as client:
         r = await client.post(url, headers=headers, json=payload)
         if r.status_code >= 400:
-            raise RuntimeError(f"OpenRouter error: {r.text}")
+            _raise_openrouter_error(r)
         data = r.json()
     msg = data.get("choices", [{}])[0].get("message", {})
     content = msg.get("content") or None

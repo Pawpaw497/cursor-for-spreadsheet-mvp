@@ -9,7 +9,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
-from app.api.routes import agent, config, export, health, plan
+from app.api.routes import agent, chat, config, export, health, load, plan
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +20,7 @@ def _ollama_is_running() -> bool:
     """检查 Ollama 服务是否已运行。"""
     try:
         r = httpx.get(f"{settings.OLLAMA_BASE}/api/tags", timeout=2)
+        print("Ollama key:", settings.OPENROUTER_API_KEY)
         return r.status_code == 200
     except Exception:
         return False
@@ -29,6 +30,7 @@ def _start_ollama() -> bool:
     """若 Ollama 未运行且启用了自动启动，则启动 ollama serve。返回是否由本进程启动。"""
     global _ollama_process
     if not settings.AUTO_START_OLLAMA:
+        logger.info("AUTO_START_OLLAMA=False，跳过自动启动 Ollama")
         return False
     if _ollama_is_running():
         logger.info("Ollama 已在运行，跳过自动启动")
@@ -93,3 +95,5 @@ app.include_router(health.router)
 app.include_router(plan.router)
 app.include_router(agent.router)
 app.include_router(export.router)
+app.include_router(load.router)
+app.include_router(chat.router)
