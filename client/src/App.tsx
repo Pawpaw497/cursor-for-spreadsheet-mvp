@@ -19,9 +19,11 @@ import {
   requestPlan,
   requestProjectPlan,
   requestProjectPlanById,
+  splitApiErrorDetail,
   uploadProjectFile
 } from "./llm";
 import type { ChatMessage, ConfigResponse, ModelOption } from "./llm";
+import { generateTraceId, getSessionId, logError, logInfo } from "./logger";
 
 type ConversationEntry = {
   id: number;
@@ -50,7 +52,10 @@ function createTable(name: string, rows: Record<string, any>[]): TableData {
 
 function statusFromErrorMessage(message: string): string {
   if (message.includes("云端 LLM 鉴权失败")) {
-    return "云端 LLM 鉴权失败：请在设置 OPENROUTER_API_KEY 后重启后端服务，并确认该 Key 在 OpenRouter 控制台中有效且未过期。";
+    return (
+      "云端 LLM 鉴权失败：请检查 OPENROUTER_API_KEY 并重启后端，" +
+      "或在 OpenRouter 控制台确认 Key 有效。完整原因已写入浏览器控制台日志。"
+    );
   }
   return "Error: " + message;
 }
@@ -242,8 +247,18 @@ export default function App() {
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [chatHistoryError, setChatHistoryError] = useState<string | null>(null);
   const chatScrollRef = useRef<HTMLDivElement | null>(null);
+  const diffPreviewLoggedRef = useRef(false);
+
+  useEffect(() => {
+    logInfo("app_open", {
+      sessionId: getSessionId(),
+      userAgent: typeof navigator !== "undefined" ? navigator.userAgent : "",
+      language: typeof navigator !== "undefined" ? navigator.language : ""
+    });
+  }, []);
 
   const loadSampleTables = useCallback(async () => {
+    logInfo("sample_load_manual", { sessionId: getSessionId() });
     setLoadSampleLoading(true);
     setLoadSampleError(null);
     try {
@@ -260,10 +275,15 @@ export default function App() {
       setProjectId(res.projectId);
       setActiveTable(loaded[0].name);
       setStatus("已从 test-data/sample.xlsx 加载示例数据");
+      logInfo("sample_load_manual_success", {
+        projectId: res.projectId,
+        tableCount: loaded.length
+      });
     } catch (e) {
       const msg = (e as Error)?.message ?? String(e);
       setLoadSampleError(msg);
       setStatus("加载示例失败: " + msg);
+      logError("sample_load_manual_error", { message: msg });
     } finally {
       setLoadSampleLoading(false);
     }
@@ -326,6 +346,7 @@ export default function App() {
   }, []);
 
   const onImportClick = useCallback(() => {
+    logInfo("import_file_click", {});
     fileInputRef.current?.click();
   }, []);
 
@@ -362,11 +383,16 @@ export default function App() {
           setNewTablesPreview([]);
           setCellFormats({});
           setStatus(`已从上传文件导入 ${loaded.length} 张表`);
+          logInfo("import_file_success", {
+            projectId: res.projectId,
+            tableCount: loaded.length
+          });
         }
       } catch (err) {
         const msg = (err as Error)?.message ?? String(err);
         setImportError(msg);
         setStatus("导入失败: " + msg);
+        logError("import_file_error", { message: msg });
       } finally {
         setImportLoading(false);
         // 允许选择同一个文件时仍能触发 change。
@@ -399,10 +425,21 @@ export default function App() {
         setProjectId(res.projectId);
         setActiveTable(loaded[0].name);
         setStatus("已从 test-data/sample.xlsx 加载示例数据");
+        logInfo("sample_load_auto", {
+          success: true,
+          projectId: res.projectId,
+          tableCount: loaded.length,
+          maxRetries: 3
+        });
       } catch (e) {
         const msg = (e as Error)?.message ?? String(e);
         setLoadSampleError(msg);
         setStatus("加载示例失败，请检查后端是否在 http://localhost:8787 运行");
+        logError("sample_load_auto", {
+          success: false,
+          message: msg,
+          maxRetries: 3
+        });
       } finally {
         setLoadSampleLoading(false);
       }
@@ -478,19 +515,40 @@ export default function App() {
       setLocalModelId(modelOptions.ollamaModel || modelOptions.ollamaModels[0]!.id);
   }, [modelOptions]);
 
+  const isProjectMode = tableNames.length > 1;
+
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       const isCmdK = (e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k";
       if (isCmdK) {
         e.preventDefault();
         promptRef.current?.focus();
+        logInfo("cmdk_open", {
+          promptLength: promptRef.current?.value.length ?? 0,
+          isProjectMode
+        });
       }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, []);
+  }, [isProjectMode]);
 
-  const isProjectMode = tableNames.length > 1;
+  useEffect(() => {
+    const hasPreview = !!(diff || newTablesPreview.length > 0);
+    if (!hasPreview) {
+      diffPreviewLoggedRef.current = false;
+      return;
+    }
+    if (diffPreviewLoggedRef.current) {
+      return;
+    }
+    diffPreviewLoggedRef.current = true;
+    logInfo("diff_preview_shown", {
+      hasNewTables: newTablesPreview.length > 0,
+      addedColumnsCount: diff?.addedColumns?.length ?? 0,
+      modifiedColumnsCount: diff?.modifiedColumns?.length ?? 0
+    });
+  }, [diff, newTablesPreview]);
 
   function summarizePlanForChat(p: Plan | null): string {
     if (!p) return "";
@@ -525,6 +583,21 @@ export default function App() {
       } else if (action === "create_table") {
         const s = step as { name?: string; source?: string };
         desc = `基于 ${s.source || "现有表"} 创建新表 ${s.name || ""}`;
+      } else if (action === "validate_table") {
+        const s = step as { rules?: string[]; level?: string; table?: string };
+        desc = `校验 ${s.table || "当前表"}：${(s.rules || []).length} 条规则（${s.level || "warn"}）`;
+      } else if (action === "pivot_table") {
+        const s = step as { source?: string; resultTable?: string };
+        desc = `透视表 ${s.source || ""} → ${s.resultTable || ""}`;
+      } else if (action === "unpivot_table") {
+        const s = step as { source?: string; resultTable?: string };
+        desc = `逆透视 ${s.source || ""} → ${s.resultTable || ""}`;
+      } else if (action === "delete_column") {
+        const s = step as { column?: string; table?: string };
+        desc = `删除列 ${s.column || ""}（表 ${s.table || "当前"}）`;
+      } else if (action === "reorder_columns") {
+        const s = step as { columns?: string[]; table?: string };
+        desc = `重排列顺序：${(s.columns || []).join(", ")}（表 ${s.table || "当前"}）`;
       } else {
         desc = JSON.stringify(step);
       }
@@ -576,6 +649,21 @@ export default function App() {
   }
 
   async function onGenerate() {
+    const traceId = generateTraceId();
+    const modelId = modelSource === "cloud" ? cloudModelId : localModelId;
+    logInfo("cmdk_prompt_submit", {
+      traceId,
+      promptLength: prompt.length,
+      isProjectMode,
+      modelSource,
+      modelId,
+      projectId: projectId ?? undefined,
+      planMode: isProjectMode
+        ? projectId
+          ? "project_id"
+          : "project_tables"
+        : "single_table"
+    });
     setStatus(modelSource === "cloud" ? "Calling cloud LLM…" : "Calling local LLM…");
     try {
       if (isProjectMode) {
@@ -606,16 +694,24 @@ export default function App() {
               prompt,
               modelSource,
               cloudModelId: modelSource === "cloud" ? cloudModelId : undefined,
-              localModelId: modelSource === "local" ? localModelId : undefined
+              localModelId: modelSource === "local" ? localModelId : undefined,
+              traceId
             })
           : await requestProjectPlan({
               prompt,
               tables: tablesArr,
               modelSource,
               cloudModelId: modelSource === "cloud" ? cloudModelId : undefined,
-              localModelId: modelSource === "local" ? localModelId : undefined
+              localModelId: modelSource === "local" ? localModelId : undefined,
+              traceId
             });
         setPlan(nextPlan);
+        logInfo("plan_response", {
+          traceId,
+          success: true,
+          stepsCount: nextPlan.steps.length,
+          mode: usingProjectApi ? "project_id" : "project_tables"
+        });
         const preview = applyProjectPlan(tables, nextPlan);
         setDiff(preview.diff);
         setNewTablesPreview(preview.newTables);
@@ -651,9 +747,16 @@ export default function App() {
           sampleRows: requestPayload.sampleRows,
           modelSource: requestPayload.modelSource,
           cloudModelId: requestPayload.cloudModelId,
-          localModelId: requestPayload.localModelId
+          localModelId: requestPayload.localModelId,
+          traceId
         });
         setPlan(nextPlan);
+        logInfo("plan_response", {
+          traceId,
+          success: true,
+          stepsCount: nextPlan.steps.length,
+          mode: "single_table"
+        });
         const preview = applyPlan(t.rows, t.schema, nextPlan);
         setDiff(preview.diff);
         setNewTablesPreview([]);
@@ -676,6 +779,12 @@ export default function App() {
       }
     } catch (e: unknown) {
       const msg = String((e as Error)?.message ?? e);
+      const { technical } = splitApiErrorDetail(msg);
+      logError("plan_request_error", {
+        traceId,
+        message: msg,
+        ...(technical ? { technicalDetail: technical } : {})
+      });
       setStatus(statusFromErrorMessage(msg));
     }
   }
@@ -685,6 +794,7 @@ export default function App() {
       setStatus("Nothing to undo.");
       return;
     }
+    logInfo("undo_click", { historyLength: history.length });
     const last = history[history.length - 1];
     setTables(clone(last));
     setHistory((h) => h.slice(0, -1));
@@ -693,14 +803,25 @@ export default function App() {
 
   function onApply() {
     if (!plan) return;
+    const traceId = generateTraceId();
+    logInfo("plan_apply_click", {
+      traceId,
+      stepsCount: plan.steps.length,
+      useProjectApi: !!projectId && isProjectMode,
+      projectId: projectId ?? undefined
+    });
     setHistory((h) => [...h, clone(tables)]);
 
     (async () => {
       try {
         const useProjectApi = !!projectId && isProjectMode;
         const result = useProjectApi
-          ? await executeProjectPlanById({ projectId: projectId!, plan })
-          : await executePlanOnServer({ tables, plan });
+          ? await executeProjectPlanById({
+              projectId: projectId!,
+              plan,
+              traceId
+            })
+          : await executePlanOnServer({ tables, plan, traceId });
         setTables(result.tables);
         if (result.newTables.length > 0) {
           setActiveTable(result.newTables[0]);
@@ -710,8 +831,14 @@ export default function App() {
         setPlan(null);
         setDiff((prev) => result.diff ?? prev);
         setNewTablesPreview([]);
+        logInfo("plan_apply_success", {
+          traceId,
+          newTablesCount: result.newTables.length
+        });
       } catch (e: unknown) {
-        setStatus("Apply failed: " + String((e as Error)?.message ?? e));
+        const em = String((e as Error)?.message ?? e);
+        setStatus("Apply failed: " + em);
+        logError("plan_apply_error", { traceId, message: em });
       }
     })();
   }
@@ -835,10 +962,15 @@ export default function App() {
   }
 
   async function onDownloadExcel() {
+    const traceId = generateTraceId();
+    logInfo("export_excel_click", {
+      traceId,
+      tableCount: Object.keys(tables).length
+    });
     setStatus("正在导出…");
     try {
       const tablesArr = Object.values(tables);
-      const blob = await exportProjectToExcel(tablesArr);
+      const blob = await exportProjectToExcel(tablesArr, { traceId });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
@@ -846,8 +978,11 @@ export default function App() {
       a.click();
       URL.revokeObjectURL(url);
       setStatus("已下载 project.xlsx");
+      logInfo("export_excel_success", { traceId });
     } catch (e: unknown) {
-      setStatus("导出失败: " + String((e as Error)?.message ?? e));
+      const em = String((e as Error)?.message ?? e);
+      setStatus("导出失败: " + em);
+      logError("export_excel_error", { traceId, message: em });
     }
   }
 
@@ -1105,7 +1240,10 @@ export default function App() {
               <button
                 type="button"
                 className={`ai-tab ${activeAiTab === "history" ? "active" : ""}`}
-                onClick={() => setActiveAiTab("history")}
+                onClick={() => {
+                  logInfo("history_tab_open", {});
+                  setActiveAiTab("history");
+                }}
               >
                 历史记录
               </button>
@@ -1312,7 +1450,13 @@ export default function App() {
             <button
               type="button"
               className="schema-toggle"
-              onClick={() => setSchemaExpanded((v) => !v)}
+              onClick={() => {
+                setSchemaExpanded((v) => {
+                  const next = !v;
+                  logInfo("schema_toggle", { expanded: next });
+                  return next;
+                });
+              }}
             >
               <span className="schema-toggle-icon">
                 {schemaExpanded ? "▼" : "▶"}
@@ -1334,7 +1478,13 @@ export default function App() {
           <button
             type="button"
             className="panel-toggle"
-            onClick={() => setAiPanelCollapsed((v) => !v)}
+            onClick={() => {
+              setAiPanelCollapsed((v) => {
+                const next = !v;
+                logInfo("ai_panel_collapse_toggle", { collapsed: next });
+                return next;
+              });
+            }}
             title={aiPanelCollapsed ? "展开 AI 面板" : "折叠 AI 面板"}
           >
             {aiPanelCollapsed ? "◀" : "▶"}

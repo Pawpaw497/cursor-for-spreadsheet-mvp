@@ -1,16 +1,34 @@
 """LLM 调用：Ollama / OpenRouter。"""
 from __future__ import annotations
 
+import time
 from typing import Any
 
 import httpx
 
 from app.config import settings
+from app.logging_config import get_logger
 from app.services.prompts import Message
+
+log = get_logger("services.llm")
 
 # 带 tools 时返回：(content 或 None, tool_calls 或 None)
 # tool_calls: list[dict] 每项 {"id": str, "name": str, "arguments": str}
 LLMWithToolsResult = tuple[str | None, list[dict] | None]
+
+
+def _message_stats(messages: list[Message]) -> tuple[int, int]:
+    """返回消息条数与内容字符总数（用于日志，不落库全文）。"""
+    n = len(messages)
+    total = sum(len(m.content or "") for m in messages)
+    return n, total
+
+
+def _dict_message_stats(messages: list[dict]) -> tuple[int, int]:
+    """dict 形态 messages 的条数与内容字符估计。"""
+    n = len(messages)
+    total = sum(len(str(m.get("content") or "")) for m in messages)
+    return n, total
 
 
 def _messages_to_payload(messages: list[Message]) -> list[dict]:
@@ -202,16 +220,55 @@ async def call_llm_with_tools(
     src = (model_source or "cloud").lower()
     if src == "local":
         model = local_model_id or settings.OLLAMA_MODEL
-        return await call_ollama_with_tools(model=model, messages=messages, tools=tools)
-    if src == "cloud":
-        api_key = settings.OPENROUTER_API_KEY
-        if not api_key:
+    elif src == "cloud":
+        if not settings.OPENROUTER_API_KEY:
             raise ValueError("OPENROUTER_API_KEY missing")
         model = cloud_model_id or settings.OPENROUTER_MODEL
-        return await call_openrouter_with_tools(
-            api_key=api_key, model=model, messages=messages, tools=tools
+    else:
+        raise ValueError(f"Unknown modelSource: {model_source}")
+
+    n_msg, n_chars = _dict_message_stats(messages)
+    log.info(
+        "llm_with_tools start source=%s model=%s messages=%d content_chars=%d tools=%d",
+        src,
+        model,
+        n_msg,
+        n_chars,
+        len(tools),
+    )
+    t0 = time.perf_counter()
+    try:
+        if src == "local":
+            content, tool_calls = await call_ollama_with_tools(
+                model=model, messages=messages, tools=tools
+            )
+        else:
+            content, tool_calls = await call_openrouter_with_tools(
+                api_key=settings.OPENROUTER_API_KEY,
+                model=model,
+                messages=messages,
+                tools=tools,
+            )
+        elapsed_ms = (time.perf_counter() - t0) * 1000
+        has_tools = bool(tool_calls)
+        content_len = len(content) if content else 0
+        log.info(
+            "llm_with_tools done source=%s model=%s elapsed_ms=%.2f has_tool_calls=%s content_chars=%d",
+            src,
+            model,
+            elapsed_ms,
+            has_tools,
+            content_len,
         )
-    raise ValueError(f"Unknown modelSource: {model_source}")
+        return (content, tool_calls)
+    except Exception:
+        log.exception(
+            "llm_with_tools failed source=%s model=%s elapsed_ms=%.2f",
+            src,
+            model,
+            (time.perf_counter() - t0) * 1000,
+        )
+        raise
 
 
 async def call_llm(
@@ -225,13 +282,45 @@ async def call_llm(
     src = (model_source or "cloud").lower()
     if src == "local":
         model = local_model_id or settings.OLLAMA_MODEL
-        return await call_ollama(model=model, messages=messages)
-    if src == "cloud":
-        api_key = settings.OPENROUTER_API_KEY
-        if not api_key:
+    elif src == "cloud":
+        if not settings.OPENROUTER_API_KEY:
             raise ValueError("OPENROUTER_API_KEY missing")
         model = cloud_model_id or settings.OPENROUTER_MODEL
-        return await call_openrouter(
-            api_key=api_key, model=model, messages=messages
+    else:
+        raise ValueError(f"Unknown modelSource: {model_source}")
+
+    n_msg, n_chars = _message_stats(messages)
+    log.info(
+        "llm call start source=%s model=%s messages=%d content_chars=%d",
+        src,
+        model,
+        n_msg,
+        n_chars,
+    )
+    t0 = time.perf_counter()
+    try:
+        if src == "local":
+            out = await call_ollama(model=model, messages=messages)
+        else:
+            out = await call_openrouter(
+                api_key=settings.OPENROUTER_API_KEY,
+                model=model,
+                messages=messages,
+            )
+        elapsed_ms = (time.perf_counter() - t0) * 1000
+        log.info(
+            "llm call done source=%s model=%s elapsed_ms=%.2f response_chars=%d",
+            src,
+            model,
+            elapsed_ms,
+            len(out or ""),
         )
-    raise ValueError(f"Unknown modelSource: {model_source}")
+        return out
+    except Exception:
+        log.exception(
+            "llm call failed source=%s model=%s elapsed_ms=%.2f",
+            src,
+            model,
+            (time.perf_counter() - t0) * 1000,
+        )
+        raise

@@ -29,6 +29,16 @@ export function inferSchema(rows: Record<string, any>[]): SchemaCol[] {
   });
 }
 
+/** 与后端 `_new_diff` 对齐。 */
+function newEmptyDiff(): Diff {
+  return {
+    addedColumns: [],
+    modifiedColumns: [],
+    validationWarnings: [],
+    validationErrors: [],
+  };
+}
+
 export function applyPlan(
   rows: Record<string, any>[],
   schema: SchemaCol[],
@@ -36,7 +46,7 @@ export function applyPlan(
 ): { rows: Record<string, any>[]; schema: SchemaCol[]; diff: Diff } {
   let nextRows = [...rows];
   let nextSchema = [...schema];
-  const diff: Diff = { addedColumns: [], modifiedColumns: [] };
+  const diff = newEmptyDiff();
 
   for (const step of plan.steps) {
     if (step.action === "add_column") {
@@ -166,6 +176,35 @@ export function applyPlan(
         .map((k) => byKey.get(k))
         .filter((c): c is SchemaCol => !!c);
     }
+
+    if (step.action === "validate_table") {
+      const level = step.level ?? "warn";
+      const { warnings, errors } = validateRulesOnRows(nextRows, step.rules, level);
+      diff.validationWarnings.push(...warnings);
+      diff.validationErrors.push(...errors);
+    }
+
+    if (step.action === "pivot_table") {
+      nextRows = pivotTable(
+        nextRows,
+        step.index,
+        step.columns,
+        step.values,
+        step.agg ?? "sum"
+      );
+      nextSchema = inferSchema(nextRows);
+    }
+
+    if (step.action === "unpivot_table") {
+      nextRows = unpivotTable(
+        nextRows,
+        step.idVars,
+        step.valueVars,
+        step.varName ?? "variable",
+        step.valueName ?? "value"
+      );
+      nextSchema = inferSchema(nextRows);
+    }
   }
 
   return { rows: nextRows, schema: nextSchema, diff };
@@ -192,7 +231,7 @@ export function applyProjectPlan(
   for (const [k, v] of Object.entries(tables)) {
     nextTables[k] = { name: k, rows: [...v.rows], schema: [...v.schema] };
   }
-  const diff: Diff = { addedColumns: [], modifiedColumns: [] };
+  const diff = newEmptyDiff();
   const newTables: string[] = [];
   const tableNames = Object.keys(tables);
 
@@ -434,6 +473,48 @@ export function applyProjectPlan(
         }
       }
     }
+
+    if (step.action === "validate_table") {
+      const tn = resolveTable(step, tableNames);
+      const t = nextTables[tn];
+      if (!t) continue;
+      const level = step.level ?? "warn";
+      const { warnings, errors } = validateRulesOnRows(t.rows, step.rules, level);
+      diff.validationWarnings.push(...warnings);
+      diff.validationErrors.push(...errors);
+    }
+
+    if (step.action === "pivot_table") {
+      const src = nextTables[step.source] ?? tables[step.source];
+      if (!src) continue;
+      const rows = pivotTable(
+        src.rows,
+        step.index,
+        step.columns,
+        step.values,
+        step.agg ?? "sum"
+      );
+      const schema = inferSchema(rows);
+      nextTables[step.resultTable] = { name: step.resultTable, rows, schema };
+      newTables.push(step.resultTable);
+      tableNames.push(step.resultTable);
+    }
+
+    if (step.action === "unpivot_table") {
+      const src = nextTables[step.source] ?? tables[step.source];
+      if (!src) continue;
+      const rows = unpivotTable(
+        src.rows,
+        step.idVars,
+        step.valueVars,
+        step.varName ?? "variable",
+        step.valueName ?? "value"
+      );
+      const schema = inferSchema(rows);
+      nextTables[step.resultTable] = { name: step.resultTable, rows, schema };
+      newTables.push(step.resultTable);
+      tableNames.push(step.resultTable);
+    }
   }
 
   return { tables: nextTables, diff, newTables };
@@ -518,6 +599,121 @@ function safeEval(fn: (row: Record<string, any>) => any, row: Record<string, any
   } catch {
     return null;
   }
+}
+
+function validateRulesOnRows(
+  rows: Record<string, any>[],
+  rules: string[],
+  level: "warn" | "error"
+): { warnings: string[]; errors: string[] } {
+  const warnings: string[] = [];
+  const errors: string[] = [];
+  for (let i = 0; i < rules.length; i++) {
+    const rule = rules[i];
+    const body = normalizeRowExpression(rule);
+    // eslint-disable-next-line no-new-func
+    const fn = new Function("row", `return (${body});`) as (
+      row: Record<string, any>
+    ) => any;
+    let failCount = 0;
+    for (const r of rows) {
+      if (!safeEval(fn, r)) failCount++;
+    }
+    if (failCount === 0) continue;
+    const msg = `rule[${i}] "${rule}" failed for ${failCount} row(s)`;
+    if (level === "warn") warnings.push(msg);
+    else errors.push(msg);
+  }
+  return { warnings, errors };
+}
+
+function pivotValueKey(v: any): string {
+  if (v == null) return "null";
+  const s = String(v);
+  return s.replace(/[^a-zA-Z0-9._-]/g, "_");
+}
+
+function aggPivotCell(
+  cellRows: Record<string, any>[],
+  valueCol: string,
+  agg: "sum" | "count" | "avg" | "max" | "min"
+): any {
+  const vals = cellRows.map((r) => r[valueCol]).filter((v) => v != null);
+  if (agg === "count") return vals.length;
+  const nums = vals
+    .map((v) => Number(v))
+    .filter((n) => !Number.isNaN(n));
+  if (nums.length === 0) return null;
+  if (agg === "sum") return nums.reduce((a, n) => a + n, 0);
+  if (agg === "avg") return nums.reduce((a, n) => a + n, 0) / nums.length;
+  if (agg === "max") return Math.max(...nums);
+  if (agg === "min") return Math.min(...nums);
+  return null;
+}
+
+function pivotTable(
+  rows: Record<string, any>[],
+  index: string[],
+  pivotCol: string,
+  valueCol: string,
+  agg: "sum" | "count" | "avg" | "max" | "min"
+): Record<string, any>[] {
+  if (index.length === 0) return [];
+  const seen = new Set<string>();
+  const pivotValues: any[] = [];
+  for (const r of rows) {
+    const pv = r[pivotCol];
+    const key = JSON.stringify(pv);
+    if (!seen.has(key)) {
+      seen.add(key);
+      pivotValues.push(pv);
+    }
+  }
+  pivotValues.sort((a, b) => {
+    const an = a == null ? 1 : 0;
+    const bn = b == null ? 1 : 0;
+    if (an !== bn) return an - bn;
+    return String(a) < String(b) ? -1 : String(a) > String(b) ? 1 : 0;
+  });
+
+  const groups = new Map<string, Record<string, any>[]>();
+  for (const r of rows) {
+    const gk = JSON.stringify(index.map((k) => r[k]));
+    if (!groups.has(gk)) groups.set(gk, []);
+    groups.get(gk)!.push(r);
+  }
+
+  const result: Record<string, any>[] = [];
+  for (const grp of groups.values()) {
+    const first = grp[0];
+    const rowOut: Record<string, any> = {};
+    for (const k of index) rowOut[k] = first[k];
+    for (const pv of pivotValues) {
+      const colName = `${valueCol}_${pivotValueKey(pv)}`;
+      const cell = grp.filter((x) => x[pivotCol] === pv);
+      rowOut[colName] = aggPivotCell(cell, valueCol, agg);
+    }
+    result.push(rowOut);
+  }
+  return result;
+}
+
+function unpivotTable(
+  rows: Record<string, any>[],
+  idVars: string[],
+  valueVars: string[],
+  varName: string,
+  valueName: string
+): Record<string, any>[] {
+  const out: Record<string, any>[] = [];
+  for (const r of rows) {
+    const base: Record<string, any> = {};
+    for (const k of idVars) base[k] = r[k];
+    for (const vcol of valueVars) {
+      out.push({ ...base, [varName]: vcol, [valueName]: r[vcol] });
+    }
+  }
+  return out;
 }
 
 function transformValue(v: any, kind: string, args: Record<string, any>) {

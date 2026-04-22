@@ -5,7 +5,10 @@ import json
 from typing import Any, Dict, List
 
 from app.agent.state import TableContext
+from app.logging_config import get_logger
 from app.services.plan_executor import _safe_globals
+
+log = get_logger("services.tools")
 
 # 工具名与实现函数的注册表；(tables, **kwargs) -> str
 _TOOL_IMPLS: Dict[str, Any] = {}
@@ -164,13 +167,29 @@ def run_tool(
     tables: List[TableContext],
 ) -> str:
     """执行指定工具，返回 JSON 字符串结果。工具不存在或参数错误时返回错误 JSON。"""
+    arg_keys = sorted(tool_args.keys()) if tool_args else []
+    log.info(
+        "run_tool start name=%s arg_keys=%s tables=%d",
+        tool_name,
+        arg_keys,
+        len(tables),
+    )
     if tool_name not in _TOOL_IMPLS:
+        log.warning("run_tool unknown_tool name=%s", tool_name)
         return json.dumps({"error": f"Unknown tool: {tool_name!r}"})
     try:
-        return _TOOL_IMPLS[tool_name](tables, **tool_args)
+        out = _TOOL_IMPLS[tool_name](tables, **tool_args)
+        log.info(
+            "run_tool done name=%s result_len=%d",
+            tool_name,
+            len(out) if out else 0,
+        )
+        return out
     except TypeError as e:
+        log.warning("run_tool invalid_arguments name=%s err=%s", tool_name, e)
         return json.dumps({"error": f"Invalid arguments: {e}"})
     except Exception as e:
+        log.exception("run_tool error name=%s err=%s", tool_name, e)
         return json.dumps({"error": str(e)})
 
 

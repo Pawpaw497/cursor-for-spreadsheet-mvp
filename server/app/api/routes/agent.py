@@ -1,25 +1,24 @@
 """Agent 路由：多轮推理 + 工具执行，支持同步与 SSE 流式输出。"""
 from __future__ import annotations
 
-import asyncio
-import json
 from typing import AsyncIterator
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 
 from app.agent import (
-    AskClarificationAction,
-    CallToolAction,
     action_kind,
-    decision,
     initial_state_from_agent_project_request,
-    run_agent_loop,
+    run_agent_orchestrated,
+    stream_agent_events,
 )
 from app.agent.state import AgentState
+from app.logging_config import get_logger
 from app.models import AgentProjectPlanRequest, PlanResponse
+from app.services.tools import get_tools_spec_for_llm
 
 router = APIRouter(prefix="/api", tags=["agent"])
+log = get_logger("api.agent")
 
 
 @router.post("/agent")
@@ -29,8 +28,23 @@ async def agent(req: AgentProjectPlanRequest):
     请求体与 /api/plan-project 相同；返回 plan 或 error/clarification。
     """
     state = initial_state_from_agent_project_request(req)
-    final_state, action = await run_agent_loop(state)
+    log.info(
+        "agent start tables=%d history_turns=%d max_turns=%d model_source=%s prompt_len=%d tools_spec_count=%d",
+        len(state.tables),
+        len(req.history or []),
+        state.max_turns,
+        state.model_source,
+        len(req.prompt or ""),
+        len(get_tools_spec_for_llm()),
+    )
+    final_state, action = await run_agent_orchestrated(state)
     kind = action_kind(action)
+    log.info(
+        "agent done kind=%s current_turn=%d summary=%s",
+        kind,
+        final_state.current_turn,
+        final_state.to_dict(),
+    )
 
     if kind == "output_plan":
         return PlanResponse(plan=action.payload)
@@ -61,62 +75,10 @@ async def agent(req: AgentProjectPlanRequest):
     )
 
 
-def _sse(event: str, data: dict) -> str:
-    """构造单条 SSE 消息。"""
-    return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
-
-
 async def _agent_event_stream(state: AgentState) -> AsyncIterator[str]:
-    """基于 AgentState 的流式事件：tool_call / tool_result / plan_done / finish / clarification。"""
-    while True:
-        if state.current_turn >= state.max_turns:
-            yield _sse(
-                "finish",
-                {"reason": "max_turns", "state": state.to_dict()},
-            )
-            return
-
-        state, action = await decision(state, use_tools=True)
-        kind = action_kind(action)
-
-        if kind == "output_plan":
-            yield _sse("plan_done", {"plan": action.payload.model_dump(), "state": state.to_dict()})
-            return
-
-        if kind == "finish":
-            reason = (action.payload and action.payload.reason) or "unknown"
-            yield _sse("finish", {"reason": reason, "state": state.to_dict()})
-            return
-
-        if kind == "ask_clarification":
-            payload: AskClarificationAction = action  # type: ignore[assignment]
-            yield _sse(
-                "clarification",
-                {
-                    "question": payload.payload.question,
-                    "options": payload.payload.options,
-                    "context": payload.payload.context,
-                    "state": state.to_dict(),
-                },
-            )
-            return
-
-        if kind == "call_tool":
-            payload: CallToolAction = action  # type: ignore[assignment]
-            yield _sse(
-                "tool_call",
-                {
-                    "tool": payload.payload.tool_name,
-                    "args": payload.payload.tool_args,
-                    "state": state.to_dict(),
-                },
-            )
-            from app.agent.decision import run_tool_and_append_messages
-
-            state = run_tool_and_append_messages(state, payload)
-            yield _sse("tool_result", {"tool": payload.payload.tool_name, "state": state.to_dict()})
-
-        await asyncio.sleep(0)
+    """代理到 orchestrator 的 SSE 序列（事件名与字段不变）。"""
+    async for chunk in stream_agent_events(state):
+        yield chunk
 
 
 @router.post("/agent-stream")
@@ -126,6 +88,14 @@ async def agent_stream(req: AgentProjectPlanRequest):
     请求体与 /api/plan-project 相同。
     """
     state = initial_state_from_agent_project_request(req)
+    log.info(
+        "agent_stream start tables=%d history_turns=%d max_turns=%d model_source=%s prompt_len=%d",
+        len(state.tables),
+        len(req.history or []),
+        state.max_turns,
+        state.model_source,
+        len(req.prompt or ""),
+    )
     return StreamingResponse(
         _agent_event_stream(state),
         media_type="text/event-stream",

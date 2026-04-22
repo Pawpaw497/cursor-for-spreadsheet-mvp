@@ -8,9 +8,12 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from types import SimpleNamespace
-from typing import Any, Dict, List, Literal, Mapping, MutableMapping, Sequence
+from typing import Any, Dict, List, Literal, Mapping, MutableMapping, Optional, Sequence
 
+from app.logging_config import get_logger
 from app.models.plan import AggregationSpec, LookupColumnMapping, Plan, Step
+
+log = get_logger("services.plan_executor")
 
 
 TableName = str
@@ -39,7 +42,8 @@ class ApplyResult:
 
     rows: List[Dict[str, Any]]
     schema: List[SchemaCol]
-    diff: Dict[str, List[str]]  # {addedColumns: [], modifiedColumns: []}
+    # addedColumns, modifiedColumns, validationWarnings, validationErrors
+    diff: Dict[str, List[str]]
 
 
 @dataclass
@@ -49,6 +53,129 @@ class ProjectApplyResult:
     tables: Dict[TableName, TableData]
     diff: Dict[str, List[str]]
     new_tables: List[TableName]
+
+
+def _new_diff() -> Dict[str, List[str]]:
+    """与前端 Diff 对齐：四键始终存在，便于消费端无需判空。"""
+    return {
+        "addedColumns": [],
+        "modifiedColumns": [],
+        "validationWarnings": [],
+        "validationErrors": [],
+    }
+
+
+def _validate_rules_on_rows(
+    rows: Sequence[Mapping[str, Any]],
+    rules: Sequence[str],
+    level: str,
+) -> tuple[List[str], List[str]]:
+    """对每行执行规则表达式，统计失败行数并返回 warn / error 文案。"""
+    warnings: List[str] = []
+    errors: List[str] = []
+    for i, rule in enumerate(rules):
+        fail_count = 0
+        for row in rows:
+            v = _eval_row_expression(rule, row)
+            if not v:
+                fail_count += 1
+        if fail_count == 0:
+            continue
+        msg = f'rule[{i}] "{rule}" failed for {fail_count} row(s)'
+        if level == "warn":
+            warnings.append(msg)
+        else:
+            errors.append(msg)
+    return warnings, errors
+
+
+def _pivot_value_key(v: Any) -> str:
+    """将透视列值转为安全的列名片段。"""
+    if v is None:
+        return "null"
+    s = str(v)
+    return "".join(c if c.isalnum() or c in "._-" else "_" for c in s)
+
+
+def _agg_pivot_cell(
+    cell_rows: Sequence[Mapping[str, Any]],
+    value_col: str,
+    agg: str,
+) -> Any:
+    """对同一 (index, pivot) 桶内的 value 列做聚合。"""
+    vals = [r.get(value_col) for r in cell_rows if r.get(value_col) is not None]
+    if agg == "count":
+        return len(vals)
+    nums: List[float] = []
+    for v in vals:
+        try:
+            nums.append(float(v))
+        except (TypeError, ValueError):
+            continue
+    if not nums:
+        return None
+    if agg == "sum":
+        return sum(nums)
+    if agg == "avg":
+        return sum(nums) / len(nums)
+    if agg == "max":
+        return max(nums)
+    if agg == "min":
+        return min(nums)
+    return None
+
+
+def _pivot_table(
+    rows: Sequence[Mapping[str, Any]],
+    index: Sequence[str],
+    pivot_col: str,
+    value_col: str,
+    agg: str,
+) -> List[Dict[str, Any]]:
+    """按 index 分组，将 pivot_col 的不同取值展开为列。"""
+    if not index:
+        return []
+    pivot_values: List[Any] = []
+    seen: set[str] = set()
+    for r in rows:
+        pv = r.get(pivot_col)
+        key = repr(pv)
+        if key not in seen:
+            seen.add(key)
+            pivot_values.append(pv)
+    pivot_values.sort(key=lambda x: (x is None, str(x) if x is not None else ""))
+
+    groups: Dict[str, List[Mapping[str, Any]]] = {}
+    for r in rows:
+        gk = repr(tuple(r.get(k) for k in index))
+        groups.setdefault(gk, []).append(r)
+
+    result: List[Dict[str, Any]] = []
+    for grp in groups.values():
+        first = grp[0]
+        row_out: Dict[str, Any] = {k: first.get(k) for k in index}
+        for pv in pivot_values:
+            col_name = f"{value_col}_{_pivot_value_key(pv)}"
+            cell = [x for x in grp if x.get(pivot_col) == pv]
+            row_out[col_name] = _agg_pivot_cell(cell, value_col, agg)
+        result.append(row_out)
+    return result
+
+
+def _unpivot_table(
+    rows: Sequence[Mapping[str, Any]],
+    id_vars: Sequence[str],
+    value_vars: Sequence[str],
+    var_name: str,
+    value_name: str,
+) -> List[Dict[str, Any]]:
+    """将 valueVars 列融化成长表。"""
+    out: List[Dict[str, Any]] = []
+    for r in rows:
+        base = {k: r.get(k) for k in id_vars}
+        for vcol in value_vars:
+            out.append({**base, var_name: vcol, value_name: r.get(vcol)})
+    return out
 
 
 def _clone_rows(rows: Sequence[Mapping[str, Any]]) -> List[Dict[str, Any]]:
@@ -155,9 +282,10 @@ def apply_plan(
     """在单表上执行 Plan，返回新行、schema 与 diff。"""
     next_rows = _clone_rows(rows)
     next_schema = _clone_schema(schema)
-    diff: Dict[str, List[str]] = {"addedColumns": [], "modifiedColumns": []}
+    diff: Dict[str, List[str]] = _new_diff()
 
     for step in plan.steps:
+        log.debug("apply_plan step action=%s", getattr(step, "action", "?"))
         if step.action == "add_column":
             name = step.name
             expr = step.expression
@@ -277,6 +405,29 @@ def apply_plan(
             key_to_col = {c.key: c for c in next_schema}
             next_schema = [key_to_col[k] for k in new_order if k in key_to_col]
 
+        if step.action == "validate_table":
+            rules = step.rules
+            level = step.level
+            warn, err = _validate_rules_on_rows(next_rows, rules, level)
+            diff["validationWarnings"].extend(warn)
+            diff["validationErrors"].extend(err)
+
+        if step.action == "pivot_table":
+            next_rows = _pivot_table(
+                next_rows, step.index, step.columns, step.values, step.agg
+            )
+            next_schema = _infer_schema(next_rows)
+
+        if step.action == "unpivot_table":
+            next_rows = _unpivot_table(
+                next_rows,
+                step.idVars,
+                step.valueVars,
+                step.varName,
+                step.valueName,
+            )
+            next_schema = _infer_schema(next_rows)
+
     return ApplyResult(rows=next_rows, schema=next_schema, diff=diff)
 
 
@@ -293,11 +444,16 @@ def apply_project_plan(
         )
         for name, t in tables.items()
     }
-    diff: Dict[str, List[str]] = {"addedColumns": [], "modifiedColumns": []}
+    diff: Dict[str, List[str]] = _new_diff()
     new_tables: List[TableName] = []
     table_names: List[TableName] = list(tables.keys())
 
     for step in plan.steps:
+        log.debug(
+            "apply_project_plan step action=%s table=%s",
+            getattr(step, "action", "?"),
+            getattr(step, "table", None),
+        )
         if step.action == "add_column":
             tn = _resolve_table_name(step, table_names)
             t = next_tables.get(tn)
@@ -547,6 +703,45 @@ def apply_project_plan(
             for col in modified_cols:
                 if col not in diff["modifiedColumns"]:
                     diff["modifiedColumns"].append(col)
+
+        if step.action == "validate_table":
+            tn = _resolve_table_name(step, table_names)
+            t = next_tables.get(tn) or tables.get(tn)
+            if not t:
+                continue
+            warn, err = _validate_rules_on_rows(t.rows, step.rules, step.level)
+            diff["validationWarnings"].extend(warn)
+            diff["validationErrors"].extend(err)
+
+        if step.action == "pivot_table":
+            src = next_tables.get(step.source) or tables.get(step.source)
+            if not src:
+                continue
+            p_rows = _pivot_table(
+                src.rows, step.index, step.columns, step.values, step.agg
+            )
+            p_schema = _infer_schema(p_rows)
+            result_name = step.resultTable
+            next_tables[result_name] = TableData(
+                name=result_name, rows=p_rows, schema=p_schema
+            )
+            new_tables.append(result_name)
+            table_names.append(result_name)
+
+        if step.action == "unpivot_table":
+            src = next_tables.get(step.source) or tables.get(step.source)
+            if not src:
+                continue
+            u_rows = _unpivot_table(
+                src.rows, step.idVars, step.valueVars, step.varName, step.valueName
+            )
+            u_schema = _infer_schema(u_rows)
+            result_name = step.resultTable
+            next_tables[result_name] = TableData(
+                name=result_name, rows=u_rows, schema=u_schema
+            )
+            new_tables.append(result_name)
+            table_names.append(result_name)
 
     return ProjectApplyResult(tables=next_tables, diff=diff, new_tables=new_tables)
 

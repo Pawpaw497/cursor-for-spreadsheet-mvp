@@ -127,6 +127,33 @@ export type PlanStep =
       columns: string[];
       table?: string;
       note?: string;
+    }
+  | {
+      action: "validate_table";
+      table?: string;
+      rules: string[];
+      level?: "warn" | "error";
+      note?: string;
+    }
+  | {
+      action: "pivot_table";
+      source: string;
+      index: string[];
+      columns: string;
+      values: string;
+      agg?: "sum" | "count" | "avg" | "max" | "min";
+      resultTable: string;
+      note?: string;
+    }
+  | {
+      action: "unpivot_table";
+      source: string;
+      idVars: string[];
+      valueVars: string[];
+      varName?: string;
+      valueName?: string;
+      resultTable: string;
+      note?: string;
     };
 
 export type Plan = {
@@ -137,6 +164,8 @@ export type Plan = {
 export type Diff = {
   addedColumns: string[];
   modifiedColumns: string[];
+  validationWarnings: string[];
+  validationErrors: string[];
 };
 
 export type TableData = {

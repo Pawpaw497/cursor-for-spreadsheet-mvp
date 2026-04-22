@@ -1,9 +1,12 @@
 """Plan 相关路由。"""
 import json
+import time
+from collections import Counter
 from typing import Dict, List
 
 from fastapi import APIRouter, HTTPException
 
+from app.logging_config import get_logger
 from app.models import (
     ExecutePlanRequest,
     ExecutePlanResponse,
@@ -32,6 +35,23 @@ from app.services.prompts import (
 from app.services.projects import project_store
 
 router = APIRouter(prefix="/api", tags=["plan"])
+log = get_logger("api.plan")
+
+
+def _step_type_summary(plan: Plan) -> str:
+    """将 Plan 中各 step 的 action 聚合为简短字符串，便于日志。"""
+    if not plan.steps:
+        return ""
+    c = Counter(getattr(s, "action", "?") for s in plan.steps)
+    return ",".join(f"{k}={v}" for k, v in sorted(c.items()))
+
+
+def _tables_shape_summary(tables: Dict[str, TableData]) -> str:
+    """多表行列统计摘要。"""
+    parts = []
+    for name, t in sorted(tables.items()):
+        parts.append(f"{name}:r{len(t.rows)}c{len(t.schema)}")
+    return ";".join(parts)
 
 
 async def _parse_and_validate_plan(
@@ -47,25 +67,36 @@ async def _parse_and_validate_plan(
     json_text = extract_json(content)
     try:
         parsed = json.loads(json_text)
-    except json.JSONDecodeError:
+    except json.JSONDecodeError as e:
+        preview = (json_text[:200] + "…") if len(json_text) > 200 else json_text
+        log.warning("plan json parse failed first_try err=%s preview=%s", e, preview)
         retry_messages = [Message.system(system_prompt), Message.user(retry_user)]
-        content = await call_llm(
-            model_source=model_source,
-            messages=retry_messages,
-            cloud_model_id=cloud_model_id,
-            local_model_id=local_model_id,
-        )
+        try:
+            content = await call_llm(
+                model_source=model_source,
+                messages=retry_messages,
+                cloud_model_id=cloud_model_id,
+                local_model_id=local_model_id,
+            )
+        except RuntimeError as e:
+            raise _http_exception_from_runtime(e) from e
         json_text = extract_json(content)
         try:
             parsed = json.loads(json_text)
-        except json.JSONDecodeError as e:
+        except json.JSONDecodeError as e2:
+            log.error(
+                "plan json parse failed after_retry err=%s raw_preview=%s",
+                e2,
+                (content[:200] + "…") if len(content) > 200 else content,
+            )
             raise HTTPException(
                 status_code=500,
-                detail=f"[500] Model did not return valid JSON: {e}. Raw: {content}",
+                detail=f"[500] Model did not return valid JSON: {e2}. Raw: {content}",
             )
     try:
         return Plan.model_validate(parsed)
     except Exception as e:
+        log.error("plan validation failed err=%s", e)
         raise HTTPException(
             status_code=500,
             detail=f"[500] Plan validation failed: {e}. Raw: {parsed}",
@@ -88,7 +119,9 @@ def _http_exception_from_runtime(e: RuntimeError) -> HTTPException:
     is_auth_error = (
         "AUTH_ERROR:" in msg
         or "HTTP 401" in msg
+        or "HTTP 403" in msg
         or '"code":401' in msg
+        or '"code":403' in msg
     )
     if is_auth_error:
         detail = "[502] 云端 LLM 鉴权失败：请检查 OPENROUTER_API_KEY 是否正确配置，" \
@@ -101,6 +134,14 @@ def _http_exception_from_runtime(e: RuntimeError) -> HTTPException:
 
 @router.post("/plan", response_model=PlanResponse)
 async def plan(req: PlanRequest):
+    t0 = time.perf_counter()
+    log.info(
+        "plan_request mode=single_table model_source=%s prompt_len=%d schema_cols=%d sample_rows=%d",
+        req.modelSource or "cloud",
+        len(req.prompt or ""),
+        len(req.schema_),
+        len(req.sampleRows),
+    )
     prompt = SpreadsheetPrompt()
     user_content = prompt.build_user_content(req.prompt, req.schema_, req.sampleRows)
     model_source = req.modelSource or "cloud"
@@ -125,12 +166,25 @@ async def plan(req: PlanRequest):
         cloud_model_id=req.cloudModelId,
         local_model_id=req.localModelId,
     )
+    log.info(
+        "plan_response mode=single_table steps=%d step_summary=%s elapsed_ms=%.2f",
+        len(plan_obj.steps),
+        _step_type_summary(plan_obj),
+        (time.perf_counter() - t0) * 1000,
+    )
     return PlanResponse(plan=plan_obj)
 
 
 @router.post("/plan-project", response_model=PlanResponse)
 async def plan_project(req: ProjectPlanRequest):
     """Project-level planning: accepts multiple tables and can generate join/create_table steps."""
+    t0 = time.perf_counter()
+    log.info(
+        "plan_request mode=project_tables model_source=%s tables=%d prompt_len=%d",
+        req.modelSource or "cloud",
+        len(req.tables),
+        len(req.prompt or ""),
+    )
     tables_data = [t.model_dump() for t in req.tables]
     prompt = ProjectPrompt()
     user_content = prompt.build_user_content(req.prompt, tables_data)
@@ -156,6 +210,12 @@ async def plan_project(req: ProjectPlanRequest):
         cloud_model_id=req.cloudModelId,
         local_model_id=req.localModelId,
     )
+    log.info(
+        "plan_response mode=project_tables steps=%d step_summary=%s elapsed_ms=%.2f",
+        len(plan_obj.steps),
+        _step_type_summary(plan_obj),
+        (time.perf_counter() - t0) * 1000,
+    )
     return PlanResponse(plan=plan_obj)
 
 
@@ -164,6 +224,18 @@ async def execute_plan(req: ExecutePlanRequest) -> ExecutePlanResponse:
     """无状态执行 Plan：前端携带当前 tables 与 plan，后端返回执行结果。"""
     if not req.tables:
         raise HTTPException(status_code=400, detail="[400] tables must not be empty")
+
+    t0 = time.perf_counter()
+    shape = ";".join(
+        f"{t.name}:r{len(t.rows)}c{len(t.schema_)}" for t in req.tables
+    )
+    log.info(
+        "execute_plan start tables=%d shape=%s steps=%d step_summary=%s",
+        len(req.tables),
+        shape,
+        len(req.plan.steps),
+        _step_type_summary(req.plan),
+    )
 
     # 将请求中的表转换为执行引擎使用的 TableData 结构。
     tables: Dict[str, TableData] = {}
@@ -185,6 +257,13 @@ async def execute_plan(req: ExecutePlanRequest) -> ExecutePlanResponse:
         result: ApplyResult = apply_plan(table.rows, table.schema, req.plan)
         out_table = TableData(name=name, rows=result.rows, schema=result.schema)
         execute_table = _tabledata_to_execute_table(out_table)
+        elapsed_ms = (time.perf_counter() - t0) * 1000
+        log.info(
+            "execute_plan done mode=single elapsed_ms=%.2f new_tables=0 diff_added=%d diff_modified=%d",
+            elapsed_ms,
+            len(result.diff.get("addedColumns", [])),
+            len(result.diff.get("modifiedColumns", [])),
+        )
         return ExecutePlanResponse(
             tables={name: execute_table},
             diff=result.diff,
@@ -197,6 +276,15 @@ async def execute_plan(req: ExecutePlanRequest) -> ExecutePlanResponse:
     for name, t in project_result.tables.items():
         out_tables[name] = _tabledata_to_execute_table(t)
 
+    elapsed_ms = (time.perf_counter() - t0) * 1000
+    log.info(
+        "execute_plan done mode=multi elapsed_ms=%.2f new_tables=%d out_tables=%d diff_added=%d diff_modified=%d",
+        elapsed_ms,
+        len(project_result.new_tables),
+        len(project_result.tables),
+        len(project_result.diff.get("addedColumns", [])),
+        len(project_result.diff.get("modifiedColumns", [])),
+    )
     return ExecutePlanResponse(
         tables=out_tables,
         diff=project_result.diff,
@@ -219,6 +307,7 @@ async def project_plan_from_store(
     req: ProjectPlanByIdRequest,
 ) -> PlanResponse:
     """基于后端 ProjectState 生成项目级 Plan（多表），前端只需传 prompt 与模型信息。"""
+    t0 = time.perf_counter()
     state = project_store.get_project(project_id)
     if not state:
         raise HTTPException(status_code=404, detail=f"[404] Project not found: {project_id!r}")
@@ -243,6 +332,13 @@ async def project_plan_from_store(
             detail=f"[400] Project {project_id!r} has no tables",
         )
 
+    log.info(
+        "plan_request mode=project_id project_id=%s model_source=%s tables=%d prompt_len=%d",
+        project_id,
+        req.modelSource or "cloud",
+        len(tables_data),
+        len(req.prompt or ""),
+    )
     prompt = ProjectPrompt()
     user_content = prompt.build_user_content(req.prompt, tables_data)
     model_source = req.modelSource or "cloud"
@@ -267,6 +363,13 @@ async def project_plan_from_store(
         cloud_model_id=req.cloudModelId,
         local_model_id=req.localModelId,
     )
+    log.info(
+        "plan_response mode=project_id project_id=%s steps=%d step_summary=%s elapsed_ms=%.2f",
+        project_id,
+        len(plan_obj.steps),
+        _step_type_summary(plan_obj),
+        (time.perf_counter() - t0) * 1000,
+    )
     return PlanResponse(plan=plan_obj)
 
 
@@ -276,6 +379,7 @@ async def execute_project_plan(
     req: ExecuteProjectPlanRequest,
 ) -> ExecutePlanResponse:
     """基于后端 ProjectState 执行 Plan，并将结果写回 ProjectStore。"""
+    t0 = time.perf_counter()
     state = project_store.get_project(project_id)
     if not state:
         raise HTTPException(status_code=404, detail=f"[404] Project not found: {project_id!r}")
@@ -305,6 +409,14 @@ async def execute_project_plan(
             detail=f"[400] Project {project_id!r} has no tables",
         )
 
+    log.info(
+        "execute_project_plan start project_id=%s tables=%d shape=%s steps=%d step_summary=%s",
+        project_id,
+        len(tables),
+        _tables_shape_summary(tables),
+        len(req.plan.steps),
+        _step_type_summary(req.plan),
+    )
     result = apply_project_plan(tables, req.plan)
 
     # 将新的表状态写回 ProjectStore。
@@ -321,6 +433,15 @@ async def execute_project_plan(
     for name, t in result.tables.items():
         out_tables[name] = _tabledata_to_execute_table(t)
 
+    elapsed_ms = (time.perf_counter() - t0) * 1000
+    log.info(
+        "execute_project_plan done project_id=%s elapsed_ms=%.2f new_tables=%d diff_added=%d diff_modified=%d",
+        project_id,
+        elapsed_ms,
+        len(result.new_tables),
+        len(result.diff.get("addedColumns", [])),
+        len(result.diff.get("modifiedColumns", [])),
+    )
     return ExecutePlanResponse(
         tables=out_tables,
         diff=result.diff,

@@ -1,7 +1,6 @@
 """Plan 相关 Schema。"""
 from typing import Any, Dict, List, Literal, Optional, Union
 
-from langchain.tools import tool
 from pydantic import BaseModel, ConfigDict, Field
 
 TransformKind = Literal["trim", "lower", "upper", "replace", "parse_date"]
@@ -158,6 +157,42 @@ class ReorderColumnsStep(BaseModel):
     note: Optional[str] = None
 
 
+class ValidateTableStep(BaseModel):
+    """对表数据做行级规则校验，不修改数据，仅向 diff 写入告警或错误。"""
+
+    action: Literal["validate_table"]
+    table: Optional[str] = None
+    rules: List[str]
+    level: Literal["warn", "error"] = "warn"
+    note: Optional[str] = None
+
+
+class PivotTableStep(BaseModel):
+    """按 index 与 pivot 列将 values 列透视到新表。"""
+
+    action: Literal["pivot_table"]
+    source: str
+    index: List[str]
+    columns: str
+    values: str
+    agg: Literal["sum", "count", "avg", "max", "min"] = "sum"
+    resultTable: str
+    note: Optional[str] = None
+
+
+class UnpivotTableStep(BaseModel):
+    """将宽表多列压成长表（melt / unpivot）。"""
+
+    action: Literal["unpivot_table"]
+    source: str
+    idVars: List[str]
+    valueVars: List[str]
+    varName: str = "variable"
+    valueName: str = "value"
+    resultTable: str
+    note: Optional[str] = None
+
+
 Step = Union[
     AddColumnStep,
     TransformColumnStep,
@@ -175,6 +210,9 @@ Step = Union[
     LookupColumnStep,
     DeleteColumnStep,
     ReorderColumnsStep,
+    ValidateTableStep,
+    PivotTableStep,
+    UnpivotTableStep,
 ]
 
 

@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import csv
-import logging
 import time
 from datetime import datetime
 from io import BytesIO, StringIO
@@ -11,21 +10,28 @@ from typing import Any, Iterable, List
 
 from fastapi import APIRouter, File, HTTPException, UploadFile
 from openpyxl import load_workbook
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from .export import SchemaCol
+from app.logging_config import get_logger
 from app.services.projects import project_store
 
 router = APIRouter(prefix="/api", tags=["load"])
-logger = logging.getLogger(__name__)
+logger = get_logger("api.load")
 
 
 class LoadedTable(BaseModel):
     """单张从上传文件载入的表。"""
 
+    model_config = ConfigDict(populate_by_name=True, serialize_by_alias=True)
+
     name: str
     rows: List[dict[str, Any]] = Field(default_factory=list)
-    schema: List[SchemaCol] = Field(default_factory=list)
+    table_schema: List[SchemaCol] = Field(
+        default_factory=list,
+        validation_alias="schema",
+        serialization_alias="schema",
+    )
 
 
 class LoadSampleResponse(BaseModel):
@@ -123,7 +129,7 @@ def _load_tables_from_excel_stream(
             t = _infer_type_from_values(col_values)
             schema.append(SchemaCol(key=key, type=t))
 
-        tables.append(LoadedTable(name=ws.title, rows=dict_rows, schema=schema))
+        tables.append(LoadedTable(name=ws.title, rows=dict_rows, table_schema=schema))
 
     return tables
 
@@ -149,7 +155,7 @@ def _load_tables_from_excel(
     )
     elapsed = time.monotonic() - start
     total_rows = sum(len(t.rows) for t in tables)
-    total_cols = sum(len(t.schema) for t in tables)
+    total_cols = sum(len(t.table_schema) for t in tables)
     logger.info(
         "Loaded Excel file %s into %d tables (rows=%d, cols=%d, max_rows_per_sheet=%s) in %.3fs",
         path,
@@ -214,10 +220,10 @@ def _load_tables_from_csv(
     if not dict_rows:
         return []
 
-    tables = [LoadedTable(name=name, rows=dict_rows, schema=schema)]
+    tables = [LoadedTable(name=name, rows=dict_rows, table_schema=schema)]
     elapsed = time.monotonic() - start
     total_rows = sum(len(t.rows) for t in tables)
-    total_cols = sum(len(t.schema) for t in tables)
+    total_cols = sum(len(t.table_schema) for t in tables)
     logger.info(
         "Loaded CSV %s into %d tables (rows=%d, cols=%d, max_rows=%s) in %.3fs",
         name,
@@ -234,6 +240,7 @@ def _load_tables_from_csv(
 async def load_sample() -> LoadSampleResponse:
     """从 test-data/sample.xlsx 加载示例表格数据，返回表名 + schema + rows。"""
     path = _test_data_excel_path()
+    logger.info("load_sample start path=%s", path)
     tables = _load_tables_from_excel(path)
     if not tables:
         raise HTTPException(
@@ -246,11 +253,16 @@ async def load_sample() -> LoadSampleResponse:
         t.name: {
             "name": t.name,
             "rows": t.rows,
-            "schema": [s.model_dump(mode="python") for s in t.schema],
+            "schema": [s.model_dump(mode="python") for s in t.table_schema],
         }
         for t in tables
     }
     state = project_store.create_project(tables_dict)
+    logger.info(
+        "load_sample done project_id=%s tables=%d",
+        state.id,
+        len(tables),
+    )
     return LoadSampleResponse(projectId=state.id, tables=tables)
 
 
@@ -265,6 +277,13 @@ async def import_file(file: UploadFile = File(...)) -> LoadSampleResponse:
     data = await file.read()
     if not data:
         raise HTTPException(status_code=400, detail="文件内容为空")
+
+    logger.info(
+        "import_file start filename=%s suffix=%s size_bytes=%d",
+        filename,
+        suffix,
+        len(data),
+    )
 
     tables: list[LoadedTable]
     if suffix in {".xlsx", ".xls"}:
@@ -294,9 +313,14 @@ async def import_file(file: UploadFile = File(...)) -> LoadSampleResponse:
         t.name: {
             "name": t.name,
             "rows": t.rows,
-            "schema": [s.model_dump(mode="python") for s in t.schema],
+            "schema": [s.model_dump(mode="python") for s in t.table_schema],
         }
         for t in tables
     }
     state = project_store.create_project(tables_dict)
+    logger.info(
+        "import_file done project_id=%s tables=%d",
+        state.id,
+        len(tables),
+    )
     return LoadSampleResponse(projectId=state.id, tables=tables)

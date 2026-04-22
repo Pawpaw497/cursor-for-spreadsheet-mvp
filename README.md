@@ -107,11 +107,15 @@ flowchart LR
 2. 克隆仓库并进入根目录：
 
 ```bash
-git clone <your-repo-url> spreadsheet-cursor
-cd spreadsheet-cursor
+git clone <your-repo-url> spreadsheet-cursor-mvp
+cd spreadsheet-cursor-mvp
 ```
 
 > 后端依赖由 `uv` 管理：在 `server` 目录执行 `uv sync` 后，会在 `server/.venv` 下创建虚拟环境并安装 `pyproject.toml` / `uv.lock` 中的依赖。
+
+> 环境约定（重要）：本项目后端仅使用 `server/.venv`（由 `uv sync` 在 `server/` 下创建）。请勿将仓库根目录 `env/`、`.venv` 或 `venv` 作为本项目标准运行环境。
+>
+> 若你本机默认 `python` 来自 Conda，但希望后端环境完全脱离 Conda，可先安装独立 Python（python.org / Homebrew），再在 `server/` 下执行 `uv python pin 3.11`（或指定 `UV_PYTHON`）后重新 `uv sync`。
 
 ### 步骤 1：准备 LLM（云端 OpenRouter 或本地 Ollama）
 
@@ -206,6 +210,40 @@ npm run dev
 
 ---
 
+## 日志与排查
+
+前后端均在**控制台**输出结构化日志，便于对照同一次用户操作。
+
+### 标识符
+
+| 字段 | 位置 | 说明 |
+|------|------|------|
+| `sessionId` | 前端 `[APP]` 日志 | 页面加载时生成，标识浏览器会话。 |
+| `traceId` / `X-Request-ID` | 前端日志 + 请求头 + 后端 `[trace=…]` | 单次 HTTP 请求级 ID；前端在 `cmdk_prompt_submit`、`plan_apply_click` 等事件中与 `request_*` 日志共用同一 `traceId`。 |
+
+### 前端（浏览器开发者工具 → Console）
+
+- 前缀为 **`[APP]`**，字段包含 `level`、`event`、`sessionId`、`ts` 及事件附加属性。
+- 常见事件：`app_open`、`sample_load_auto`、`cmdk_open`、`cmdk_prompt_submit`、`request_start` / `request_success` / `request_error`、`plan_response`、`diff_preview_shown`、`plan_apply_click`、`plan_apply_success` / `plan_apply_error`、导入/导出相关事件等。
+- **开发环境**默认输出 `info`；生产构建默认仅保证 `error` 仍会输出。可在 `.env` 中为前端设置 `VITE_ENABLE_CONSOLE_LOG=0` 关闭开发态 `info`/`debug`。
+
+### 后端（运行 uvicorn 的终端）
+
+- 在 `server/` 下通过环境变量 **`LOG_LEVEL`**（默认 `INFO`）控制级别；`DEBUG` 时可见 `plan_executor` 逐步骤日志。
+- 每条日志含 **`[trace=<id>]`**：来自请求头 `X-Request-ID`（前端传入或中间件生成），与浏览器控制台中的 `traceId` 一致时可串联全链路。
+- **`LOG_FULL_TRACEBACK`**：默认开启未捕获异常的完整栈；设为 `0`/`false` 可仅记录简短错误行。
+- 关键 logger 命名空间：`spreadsheet.http`（请求起止）、`spreadsheet.api.plan` / `agent` / `load` / `export`、`spreadsheet.services.llm` / `tools` / `projects` / `plan_executor`、`spreadsheet.agent.decision` 等。
+
+### 典型排查步骤
+
+1. 复现问题后，在浏览器控制台找到 **`cmdk_prompt_submit`**（或对应 **`request_error`**）中的 **`traceId`**。
+2. 在后端终端中搜索同一字符串（或 `grep trace=<id>`）。
+3. 根据时间顺序查看：`request start` → `llm call` / `plan_request` → `request end` 与业务错误日志。
+
+更多能力清单与 Agent 相关说明见仓库根目录 [`FEATURES.md`](FEATURES.md)、[`AGENT_IMPROVEMENTS.md`](AGENT_IMPROVEMENTS.md)。
+
+---
+
 ## 示例提示词
 
 以下是几条可以直接复制到 Chat 输入框中的**英文示例指令**（均为祈使句、无结尾句号，首词大写动词）：
@@ -245,7 +283,8 @@ npm run dev
   - **`agent/`**：Agent 骨架（状态、动作、决策、循环）
     - `state.py`：`AgentState`（包含 tables、messages、applied_plans_summary、conversation 等）、`TableContext`、`initial_state_from_*`
     - `actions.py`：动作枚举（`call_tool` / `output_plan` / `ask_clarification` / `finish`）及各类 payload
-    - `decision.py`：`decision(state) → (state, action)`（支持 tools 与澄清）、`run_agent_loop(initial_state) → (state, action)`
+    - `decision.py`：`decision(state) → (state, action)`（支持 tools 与澄清）
+    - `orchestrator.py`：LangGraph 编排与 `run_agent_orchestrated`（`run_agent_loop` 为别名），`stream_agent_events` 供 `/api/agent-stream` 使用
 - **依赖**：`pyproject.toml` + `uv.lock`（`uv sync`）；**入口**：`uv run uvicorn main:app` 或激活 `.venv` 后 `uvicorn main:app`，`main.py` 挂载 `app.main.app`。
 
 ---
@@ -259,6 +298,8 @@ npm run dev
 
 ## 更多文档
 
-- **功能详情与当前能力清单**：[`docs/features.md`](docs/features.md)
-- **项目背景与阶段目标**：[`docs/goals.md`](docs/goals.md)
-- **Agent 设计与演进记录**：[`docs/agent-improvements.md`](docs/agent-improvements.md)
+仓库根目录的 `docs/`、`scripts/` 已列入 [`.gitignore`](.gitignore)（**仅作本地**目录，不随仓库分发）。若你在本机维护文档，可沿用以下约定路径（克隆后需自行创建 `docs/`，或从内部渠道获取）：
+
+- **功能详情与当前能力清单**：`docs/features.md`
+- **项目背景与阶段目标**：`docs/goals.md`
+- **Agent 设计与演进记录**：`docs/agent-improvements.md`

@@ -11,6 +11,10 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Mapping, Optional
 
+from app.logging_config import get_logger
+
+log = get_logger("services.projects")
+
 
 @dataclass
 class ProjectState:
@@ -42,6 +46,12 @@ class ProjectStore:
                 expired.append(pid)
         for pid in expired:
             self._projects.pop(pid, None)
+        if expired:
+            log.info(
+                "project_store purge_expired count=%d sample_ids=%s",
+                len(expired),
+                expired[:8],
+            )
 
     def create_project(
         self,
@@ -59,6 +69,12 @@ class ProjectStore:
                 ttl_seconds=ttl_seconds or 60 * 60,
             )
             self._projects[pid] = state
+            log.info(
+                "project_store create id=%s tables=%d ttl_seconds=%d",
+                pid,
+                len(state.tables),
+                state.ttl_seconds,
+            )
             return state
 
     def get_project(self, project_id: str) -> Optional[ProjectState]:
@@ -85,6 +101,11 @@ class ProjectStore:
                 return None
             state.tables = {k: dict(v) for k, v in tables.items()}
             state.updated_at = self._now()
+            log.info(
+                "project_store update_tables id=%s tables=%d",
+                project_id,
+                len(state.tables),
+            )
             return state
 
 

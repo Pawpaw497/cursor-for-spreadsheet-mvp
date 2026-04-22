@@ -1,5 +1,6 @@
 """导出 Excel 相关路由。"""
 import io
+import time
 from typing import Any
 
 from fastapi import APIRouter
@@ -7,7 +8,10 @@ from fastapi.responses import StreamingResponse
 from openpyxl import Workbook
 from pydantic import BaseModel, Field
 
+from app.logging_config import get_logger
+
 router = APIRouter(prefix="/api", tags=["export"])
+log = get_logger("api.export")
 
 
 class SchemaCol(BaseModel):
@@ -39,6 +43,11 @@ def _sanitize_sheet_name(name: str) -> str:
 @router.post("/export-excel")
 async def export_excel(req: ExportExcelRequest):
     """将当前项目多张表导出为一个 Excel 文件，每张表一个 sheet。"""
+    t0 = time.perf_counter()
+    shape = ";".join(
+        f"{t.name}:r{len(t.rows)}c{len(t.schema_)}" for t in req.tables
+    )
+    log.info("export_excel start tables=%d shape=%s", len(req.tables), shape)
     wb = Workbook()
     # 删除默认创建的 sheet，后面按顺序创建
     if "Sheet" in wb.sheetnames:
@@ -61,6 +70,11 @@ async def export_excel(req: ExportExcelRequest):
     buf = io.BytesIO()
     wb.save(buf)
     buf.seek(0)
+    log.info(
+        "export_excel done sheets=%d elapsed_ms=%.2f",
+        len(req.tables),
+        (time.perf_counter() - t0) * 1000,
+    )
     return StreamingResponse(
         buf,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",

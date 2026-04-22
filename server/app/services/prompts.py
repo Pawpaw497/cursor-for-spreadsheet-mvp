@@ -7,7 +7,11 @@ from typing import Any, Dict, List, Literal
 
 from pydantic import BaseModel, Field
 
-from app.services.prompt_content import PROJECT_SYSTEM, SPREADSHEET_SYSTEM
+from app.services.prompt_content import (
+    PROJECT_SYSTEM,
+    SPREADSHEET_SYSTEM,
+    build_column_stats_text,
+)
 
 Role = Literal["system", "user", "assistant"]
 
@@ -52,11 +56,19 @@ class SingleTableUserContent(BaseModel):
         """序列化为 prompt 中的 user 消息正文。"""
         schema_str = json.dumps(self.schema_, ensure_ascii=False, indent=2)
         rows_str = json.dumps(self.sample_rows, ensure_ascii=False, indent=2)
+        col_keys: List[str] = []
+        for c in self.schema_:
+            if isinstance(c, dict) and c.get("key"):
+                col_keys.append(str(c["key"]))
+        stats = build_column_stats_text(
+            self.sample_rows, col_keys or None
+        )
         return (
             "Spreadsheet schema:\n"
             f"{schema_str}\n\n"
             "Sample rows:\n"
             f"{rows_str}\n\n"
+            f"{stats}"
             "User request:\n"
             f"{self.user_prompt}\n"
         )
@@ -85,9 +97,19 @@ class ProjectUserContent(BaseModel):
         for t in self.tables:
             schema_str = json.dumps(t.schema_, ensure_ascii=False, indent=2)
             rows_str = json.dumps(t.sample_rows, ensure_ascii=False, indent=2)
+            col_keys: List[str] = []
+            for c in t.schema_:
+                if isinstance(c, dict) and c.get("key"):
+                    col_keys.append(str(c["key"]))
+            stats = build_column_stats_text(
+                t.sample_rows, col_keys or None
+            )
             parts.append(f"Table '{t.name}':")
             parts.append(f"  schema: {schema_str}")
             parts.append(f"  sample rows: {rows_str}\n")
+            if stats:
+                for line in stats.rstrip("\n").split("\n"):
+                    parts.append(f"  {line}\n")
         parts.append(f"User request:\n{self.user_prompt}\n")
         return "".join(parts)
 

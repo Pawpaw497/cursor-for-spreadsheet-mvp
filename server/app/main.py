@@ -1,17 +1,27 @@
 """FastAPI 应用入口。"""
 from contextlib import asynccontextmanager
-import logging
 import subprocess
 import time
+import uuid
 
 import httpx
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.config import settings
 from app.api.routes import agent, chat, config, export, health, load, plan
+from app.logging_config import (
+    get_logger,
+    init_logging,
+    log_exception_traceback,
+    reset_trace_id,
+    set_trace_id,
+)
 
-logger = logging.getLogger(__name__)
+init_logging()
+logger = get_logger("app.main")
 
 _ollama_process: subprocess.Popen | None = None
 
@@ -20,7 +30,6 @@ def _ollama_is_running() -> bool:
     """检查 Ollama 服务是否已运行。"""
     try:
         r = httpx.get(f"{settings.OLLAMA_BASE}/api/tags", timeout=2)
-        print("Ollama key:", settings.OPENROUTER_API_KEY)
         return r.status_code == 200
     except Exception:
         return False
@@ -75,12 +84,61 @@ def _stop_ollama_if_started() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """应用生命周期：启动时尝试启动本地 Ollama，关闭时清理。"""
+    logger.info(
+        "app startup title=%s auto_start_ollama=%s ollama_base=%s",
+        settings.APP_TITLE,
+        settings.AUTO_START_OLLAMA,
+        settings.OLLAMA_BASE,
+    )
     _start_ollama()
     yield
+    logger.info("app shutdown")
     _stop_ollama_if_started()
 
 
 app = FastAPI(title=settings.APP_TITLE, lifespan=lifespan)
+
+http_logger = get_logger("http")
+
+
+class RequestLoggingMiddleware(BaseHTTPMiddleware):
+    """记录请求起止、注入 X-Request-ID 与 trace 上下文。"""
+
+    async def dispatch(self, request: Request, call_next):
+        raw = request.headers.get("X-Request-ID")
+        trace_id = (raw.strip() if raw else "") or uuid.uuid4().hex
+        token = set_trace_id(trace_id)
+        start = time.perf_counter()
+        client_host = request.client.host if request.client else "-"
+        ua = (request.headers.get("user-agent") or "")[:120]
+        http_logger.info(
+            "request start method=%s path=%s client=%s ua=%s",
+            request.method,
+            request.url.path,
+            client_host,
+            ua,
+        )
+        try:
+            response = await call_next(request)
+            response.headers["X-Request-ID"] = trace_id
+            elapsed_ms = (time.perf_counter() - start) * 1000
+            http_logger.info(
+                "request end status=%s elapsed_ms=%.2f error=%s",
+                response.status_code,
+                elapsed_ms,
+                response.status_code >= 400,
+            )
+            return response
+        except Exception:
+            elapsed_ms = (time.perf_counter() - start) * 1000
+            http_logger.exception("request failed elapsed_ms=%.2f", elapsed_ms)
+            raise
+        finally:
+            reset_trace_id(token)
+
+
+# 先于 CORS 注册，使外层最后执行（Starlette 后添加的先处理）
+app.add_middleware(RequestLoggingMiddleware)
 
 app.add_middleware(
     CORSMiddleware,
@@ -88,7 +146,46 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["X-Request-ID"],
 )
+
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    """记录 HTTP 异常并返回与 FastAPI 一致的 JSON 形状。"""
+    if exc.status_code >= 500:
+        http_logger.error(
+            "HTTPException status=%s detail=%s path=%s",
+            exc.status_code,
+            exc.detail,
+            request.url.path,
+        )
+    else:
+        http_logger.warning(
+            "HTTPException status=%s detail=%s path=%s",
+            exc.status_code,
+            exc.detail,
+            request.url.path,
+        )
+    return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception):
+    """记录未捕获异常，避免静默 500。"""
+    if log_exception_traceback():
+        http_logger.exception("unhandled exception path=%s", request.url.path)
+    else:
+        http_logger.error(
+            "unhandled exception path=%s err=%s",
+            request.url.path,
+            exc,
+        )
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Internal server error"},
+    )
+
 
 app.include_router(config.router)
 app.include_router(health.router)

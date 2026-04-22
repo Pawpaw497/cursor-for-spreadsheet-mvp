@@ -1,5 +1,10 @@
 import { z } from "zod";
-import type { Plan, SchemaCol, TableData } from "./types";
+import {
+  generateTraceId,
+  logError,
+  logInfo
+} from "./logger";
+import type { Diff, Plan, SchemaCol, TableData } from "./types";
 
 const AggregationSpecSchema = z.object({
   column: z.string(),
@@ -136,6 +141,45 @@ const StepSchema = z.union([
     columns: z.array(z.string()).min(1),
     table: z.string().nullish().transform((v) => v ?? undefined),
     note: z.string().nullish().transform((v) => v ?? undefined)
+  }),
+  z.object({
+    action: z.literal("validate_table"),
+    table: z.string().nullish().transform((v) => v ?? undefined),
+    rules: z.array(z.string()).min(1),
+    level: z
+      .enum(["warn", "error"])
+      .nullish()
+      .transform((v) => v ?? "warn"),
+    note: z.string().nullish().transform((v) => v ?? undefined)
+  }),
+  z.object({
+    action: z.literal("pivot_table"),
+    source: z.string(),
+    index: z.array(z.string()).min(1),
+    columns: z.string(),
+    values: z.string(),
+    agg: z
+      .enum(["sum", "count", "avg", "max", "min"])
+      .nullish()
+      .transform((v) => v ?? "sum"),
+    resultTable: z.string(),
+    note: z.string().nullish().transform((v) => v ?? undefined)
+  }),
+  z.object({
+    action: z.literal("unpivot_table"),
+    source: z.string(),
+    idVars: z.array(z.string()).min(1),
+    valueVars: z.array(z.string()).min(1),
+    varName: z
+      .string()
+      .nullish()
+      .transform((v) => v ?? "variable"),
+    valueName: z
+      .string()
+      .nullish()
+      .transform((v) => v ?? "value"),
+    resultTable: z.string(),
+    note: z.string().nullish().transform((v) => v ?? undefined)
   })
 ]);
 
@@ -174,19 +218,97 @@ export type ChatMessage = {
 
 const API_BASE = "http://localhost:8787";
 
+const TIMEOUT_DEFAULT_MS = 8000;
+const TIMEOUT_LLM_MS = 180000;
+const TIMEOUT_IMPORT_MS = 20000;
+const TIMEOUT_EXECUTE_MS = 120000;
+const TIMEOUT_EXPORT_MS = 60000;
+
+type FetchLogOptions = {
+  /** 用于控制台与后端对齐的请求关联 ID。 */
+  traceId?: string;
+  /** 业务操作名，如 request_plan。 */
+  operation: string;
+};
+
+function requestPath(url: string): string {
+  try {
+    return new URL(url).pathname;
+  } catch {
+    return url;
+  }
+}
+
+/**
+ * 带超时、X-Request-ID 与 request_* 日志的 fetch。
+ *
+ * @param url 请求 URL。
+ * @param init fetch init。
+ * @param timeoutMs 超时毫秒。
+ * @param logOptions 日志与 trace；未传 traceId 时自动生成。
+ */
 async function fetchWithTimeout(
   url: string,
   init?: RequestInit,
-  timeoutMs = 8000
+  timeoutMs = TIMEOUT_DEFAULT_MS,
+  logOptions?: FetchLogOptions
 ): Promise<Response> {
+  const traceId = logOptions?.traceId ?? generateTraceId();
+  const operation = logOptions?.operation ?? "http";
+  const path = requestPath(url);
+  const method = (init?.method ?? "GET").toUpperCase();
+
+  const headers = new Headers(init?.headers);
+  if (!headers.has("X-Request-ID")) {
+    headers.set("X-Request-ID", traceId);
+  }
+
+  logInfo("request_start", { operation, path, traceId, method });
+
   const controller = new AbortController();
   const id = setTimeout(() => controller.abort(), timeoutMs);
+  const t0 = performance.now();
   try {
-    return await fetch(url, { ...init, signal: controller.signal });
+    const resp = await fetch(url, {
+      ...init,
+      headers,
+      signal: controller.signal
+    });
+    const durationMs = Math.round(performance.now() - t0);
+    if (!resp.ok) {
+      logError("request_error", {
+        operation,
+        path,
+        traceId,
+        status: resp.status,
+        durationMs,
+        message: `HTTP ${resp.status}`
+      });
+    } else {
+      logInfo("request_success", {
+        operation,
+        path,
+        traceId,
+        status: resp.status,
+        durationMs
+      });
+    }
+    return resp;
   } catch (e) {
     const err = e as Error;
-    // 将超时场景显式转为可读错误，避免请求长时间 pending 导致前端状态悬挂在 Loading。
-    if (err.name === "AbortError") {
+    const durationMs = Math.round(performance.now() - t0);
+    const isTimeout = err.name === "AbortError";
+    logError("request_error", {
+      operation,
+      path,
+      traceId,
+      isTimeout,
+      durationMs,
+      message: isTimeout
+        ? `请求超时（>${timeoutMs}ms），请检查后端是否在 ${API_BASE} 运行`
+        : err.message
+    });
+    if (isTimeout) {
       throw new Error(
         `请求超时（>${timeoutMs}ms），请检查后端是否在 ${API_BASE} 运行`
       );
@@ -208,8 +330,39 @@ function errorMessageFromResponse(resp: Response, txt: string): string {
   return txt ? `[${resp.status}] ${txt}` : `[${resp.status}] Request failed`;
 }
 
+/**
+ * 拆分 FastAPI `detail` 中的主句与「技术详情」尾段（若存在）。
+ *
+ * Plan 路由在 OpenRouter 鉴权失败时会在 detail 末尾附加 `（技术详情：...）`，
+ * 便于 UI 短提示与日志长尾分离。
+ *
+ * @param detail HTTP JSON body 中的 `detail` 字段或等价字符串。
+ * @returns short 为截断技术尾后的文案；technical 为尾段内容（不含括号标签）。
+ */
+export function splitApiErrorDetail(detail: string): {
+  short: string;
+  technical?: string;
+} {
+  const marker = "（技术详情：";
+  const i = detail.indexOf(marker);
+  if (i >= 0) {
+    const short = detail.slice(0, i).trim();
+    let tech = detail.slice(i + marker.length);
+    if (tech.endsWith("）")) {
+      tech = tech.slice(0, -1);
+    }
+    return { short, technical: tech };
+  }
+  return { short: detail };
+}
+
 export async function fetchConfig(): Promise<ConfigResponse> {
-  const resp = await fetch(`${API_BASE}/api/config`);
+  const resp = await fetchWithTimeout(
+    `${API_BASE}/api/config`,
+    undefined,
+    TIMEOUT_DEFAULT_MS,
+    { operation: "fetch_config" }
+  );
   if (!resp.ok) {
     const txt = await resp.text();
     throw new Error(errorMessageFromResponse(resp, txt));
@@ -224,17 +377,26 @@ export async function requestPlan(opts: {
   modelSource?: ModelSource;
   cloudModelId?: string;
   localModelId?: string;
+  /** 与 UI 事件对齐的请求 ID；缺省时由 fetch 层生成。 */
+  traceId?: string;
 }): Promise<Plan> {
-  const resp = await fetch(`${API_BASE}/api/plan`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      ...opts,
-      modelSource: opts.modelSource ?? "cloud",
-      cloudModelId: opts.cloudModelId ?? undefined,
-      localModelId: opts.localModelId ?? undefined
-    })
-  });
+  const resp = await fetchWithTimeout(
+    `${API_BASE}/api/plan`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        prompt: opts.prompt,
+        schema: opts.schema,
+        sampleRows: opts.sampleRows,
+        modelSource: opts.modelSource ?? "cloud",
+        cloudModelId: opts.cloudModelId ?? undefined,
+        localModelId: opts.localModelId ?? undefined
+      })
+    },
+    TIMEOUT_LLM_MS,
+    { operation: "request_plan", traceId: opts.traceId }
+  );
 
   if (!resp.ok) {
     const txt = await resp.text();
@@ -251,6 +413,7 @@ export async function requestProjectPlan(opts: {
   modelSource?: ModelSource;
   cloudModelId?: string;
   localModelId?: string;
+  traceId?: string;
 }): Promise<Plan> {
   const payload = {
     prompt: opts.prompt,
@@ -263,11 +426,16 @@ export async function requestProjectPlan(opts: {
     cloudModelId: opts.cloudModelId ?? undefined,
     localModelId: opts.localModelId ?? undefined
   };
-  const resp = await fetch(`${API_BASE}/api/plan-project`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload)
-  });
+  const resp = await fetchWithTimeout(
+    `${API_BASE}/api/plan-project`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    },
+    TIMEOUT_LLM_MS,
+    { operation: "request_project_plan", traceId: opts.traceId }
+  );
 
   if (!resp.ok) {
     const txt = await resp.text();
@@ -291,9 +459,15 @@ type LoadSampleResponse = {
 export async function fetchSampleTables(opts?: {
   /** 单次请求的超时时间（毫秒），未指定时默认 8000ms。 */
   timeoutMs?: number;
+  traceId?: string;
 }): Promise<{ projectId: string; tables: TableData[] }> {
-  const timeoutMs = opts?.timeoutMs ?? 8000;
-  const resp = await fetchWithTimeout(`${API_BASE}/api/load-sample`, undefined, timeoutMs);
+  const timeoutMs = opts?.timeoutMs ?? TIMEOUT_DEFAULT_MS;
+  const resp = await fetchWithTimeout(
+    `${API_BASE}/api/load-sample`,
+    undefined,
+    timeoutMs,
+    { operation: "load_sample", traceId: opts?.traceId }
+  );
   if (!resp.ok) {
     const txt = await resp.text();
     throw new Error(errorMessageFromResponse(resp, txt || "Failed to load sample tables"));
@@ -315,13 +489,15 @@ export async function uploadProjectFile(
   form.append("file", file);
 
   // 导入场景给更长一点的超时时间，以兼容体积较大的业务文件。
+  const traceId = generateTraceId();
   const resp = await fetchWithTimeout(
     `${API_BASE}/api/import-file`,
     {
       method: "POST",
       body: form
     },
-    20000
+    TIMEOUT_IMPORT_MS,
+    { operation: "import_file", traceId }
   );
 
   if (!resp.ok) {
@@ -368,6 +544,7 @@ export async function requestProjectPlanById(opts: {
   modelSource?: ModelSource;
   cloudModelId?: string;
   localModelId?: string;
+  traceId?: string;
 }): Promise<Plan> {
   const payload = {
     prompt: opts.prompt,
@@ -375,11 +552,16 @@ export async function requestProjectPlanById(opts: {
     cloudModelId: opts.cloudModelId ?? undefined,
     localModelId: opts.localModelId ?? undefined
   };
-  const resp = await fetch(`${API_BASE}/api/projects/${encodeURIComponent(opts.projectId)}/plan`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload)
-  });
+  const resp = await fetchWithTimeout(
+    `${API_BASE}/api/projects/${encodeURIComponent(opts.projectId)}/plan`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    },
+    TIMEOUT_LLM_MS,
+    { operation: "request_project_plan_by_id", traceId: opts.traceId }
+  );
 
   if (!resp.ok) {
     const txt = await resp.text();
@@ -391,12 +573,20 @@ export async function requestProjectPlanById(opts: {
 }
 
 /** 将当前项目导出为 Excel 文件，返回 Blob。*/
-export async function exportProjectToExcel(tables: TableData[]): Promise<Blob> {
-  const resp = await fetch(`${API_BASE}/api/export-excel`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ tables })
-  });
+export async function exportProjectToExcel(
+  tables: TableData[],
+  opts?: { traceId?: string }
+): Promise<Blob> {
+  const resp = await fetchWithTimeout(
+    `${API_BASE}/api/export-excel`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ tables })
+    },
+    TIMEOUT_EXPORT_MS,
+    { operation: "export_excel", traceId: opts?.traceId }
+  );
   if (!resp.ok) {
     const txt = await resp.text();
     throw new Error(errorMessageFromResponse(resp, txt || "导出失败"));
@@ -416,14 +606,28 @@ type ExecutePlanResponse = {
   diff: {
     addedColumns: string[];
     modifiedColumns: string[];
+    validationWarnings: string[];
+    validationErrors: string[];
   };
   newTables: string[];
 };
+
+function normalizeExecuteDiff(
+  d: Partial<ExecutePlanResponse["diff"]> | undefined
+): Diff {
+  return {
+    addedColumns: d?.addedColumns ?? [],
+    modifiedColumns: d?.modifiedColumns ?? [],
+    validationWarnings: d?.validationWarnings ?? [],
+    validationErrors: d?.validationErrors ?? []
+  };
+}
 
 /** 调用后端 /api/execute-plan，在服务端执行 Plan 并返回更新后的表与 Diff。 */
 export async function executePlanOnServer(opts: {
   tables: Record<string, TableData>;
   plan: Plan;
+  traceId?: string;
 }): Promise<{ tables: Record<string, TableData>; diff: ExecutePlanResponse["diff"]; newTables: string[] }> {
   const payload = {
     plan: opts.plan,
@@ -434,11 +638,16 @@ export async function executePlanOnServer(opts: {
     }))
   };
 
-  const resp = await fetch(`${API_BASE}/api/execute-plan`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload)
-  });
+  const resp = await fetchWithTimeout(
+    `${API_BASE}/api/execute-plan`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    },
+    TIMEOUT_EXECUTE_MS,
+    { operation: "execute_plan", traceId: opts.traceId }
+  );
 
   if (!resp.ok) {
     const txt = await resp.text();
@@ -454,21 +663,28 @@ export async function executePlanOnServer(opts: {
       schema: t.schema
     };
   }
-  return { tables: nextTables, diff: data.diff, newTables: data.newTables };
+  return {
+    tables: nextTables,
+    diff: normalizeExecuteDiff(data.diff),
+    newTables: data.newTables
+  };
 }
 
 /** 基于后端 ProjectState 执行 Plan，并返回最新表状态。*/
 export async function executeProjectPlanById(opts: {
   projectId: string;
   plan: Plan;
+  traceId?: string;
 }): Promise<{ tables: Record<string, TableData>; diff: ExecutePlanResponse["diff"]; newTables: string[] }> {
-  const resp = await fetch(
+  const resp = await fetchWithTimeout(
     `${API_BASE}/api/projects/${encodeURIComponent(opts.projectId)}/execute-plan`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ plan: opts.plan })
-    }
+    },
+    TIMEOUT_EXECUTE_MS,
+    { operation: "execute_project_plan_by_id", traceId: opts.traceId }
   );
 
   if (!resp.ok) {
@@ -485,7 +701,11 @@ export async function executeProjectPlanById(opts: {
       schema: t.schema
     };
   }
-  return { tables: nextTables, diff: data.diff, newTables: data.newTables };
+  return {
+    tables: nextTables,
+    diff: normalizeExecuteDiff(data.diff),
+    newTables: data.newTables
+  };
 }
 
 type ChatHistoryApiMessage = Omit<ChatMessage, "source" | "createdAt"> & {
@@ -500,6 +720,7 @@ type ChatHistoryResponse = {
 export async function fetchChatHistory(opts?: {
   projectId?: string;
   limit?: number;
+  traceId?: string;
 }): Promise<ChatMessage[]> {
   const params = new URLSearchParams();
   if (opts?.projectId) {
@@ -513,7 +734,10 @@ export async function fetchChatHistory(opts?: {
     ? `${API_BASE}/api/chat-history?${query}`
     : `${API_BASE}/api/chat-history`;
 
-  const resp = await fetchWithTimeout(url);
+  const resp = await fetchWithTimeout(url, undefined, TIMEOUT_DEFAULT_MS, {
+    operation: "fetch_chat_history",
+    traceId: opts?.traceId
+  });
   if (!resp.ok) {
     const txt = await resp.text();
     throw new Error(errorMessageFromResponse(resp, txt || "加载历史对话失败"));

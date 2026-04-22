@@ -11,6 +11,7 @@ dependencies = [
     "openpyxl>=3.1.0",
     "pydantic>=2.8.0",
     "python-multipart>=0.0.9",
+    "langgraph>=0.2.0",
 ]
 
 # Application project: only manage third-party deps; do not build/install a wheel.

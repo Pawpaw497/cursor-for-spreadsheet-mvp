@@ -40,3 +40,4 @@ alwaysApply: true
 - **前端选型**：直接使用成熟的前端表格组件（如 React-Data-Grid、AG Grid 等）。
 - **范围与聚焦**：明确非目标（Non-goals），聚焦 MVP 与真实可跑 Demo；优先把一两件关键能力做完整。
 - 后端仅使用 `server` 目录（原 server_py 已废弃，不再使用）。
+- Python 虚拟环境约定为 `server/.venv`（由 `uv` 管理）；不要将仓库根目录 `env/`、`.venv`、`venv` 作为本项目标准环境。

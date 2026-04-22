@@ -7,10 +7,12 @@ from typing import List, Optional
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
+from app.logging_config import get_logger
 from app.models import ChatMessage
 from app.services.chat_history import load_chat_history
 
 router = APIRouter(prefix="/api", tags=["chat"])
+log = get_logger("api.chat")
 
 
 class ChatHistoryResponse(BaseModel):
@@ -28,6 +30,12 @@ async def chat_history(
 
     Messages are ordered by createdAt descending on the server side.
     """
+    log.info(
+        "chat_history request project_id=%s limit=%d",
+        project_id or "-",
+        limit,
+    )
     messages = load_chat_history(project_id=project_id, limit=limit)
+    log.info("chat_history response count=%d", len(messages))
     return ChatHistoryResponse(messages=messages)
 

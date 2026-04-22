@@ -16,6 +16,7 @@ from app.agent.actions import (
     action_kind,
 )
 from app.agent.state import AgentState
+from app.logging_config import get_logger
 from app.models.plan import Plan
 from app.services.llm import call_llm, call_llm_with_tools
 from app.services.prompts import (
@@ -25,6 +26,8 @@ from app.services.prompts import (
     extract_json,
 )
 from app.services.tools import get_tools_spec_for_llm
+
+log = get_logger("agent.decision")
 
 
 def _build_messages_from_state(state: AgentState) -> list[Message]:
@@ -167,7 +170,9 @@ async def decision(
     json_text = extract_json(content or "")
     try:
         parsed = json.loads(json_text)
-    except json.JSONDecodeError:
+    except json.JSONDecodeError as e:
+        preview = (json_text[:200] + "…") if len(json_text) > 200 else json_text
+        log.warning("agent decision json parse failed first_try err=%s preview=%s", e, preview)
         # 重试一次：追加 "Return ONLY JSON."
         if len(state.tables) == 1:
             prompt = SpreadsheetPrompt()
@@ -212,6 +217,11 @@ async def decision(
         try:
             parsed = json.loads(json_text)
         except json.JSONDecodeError as e:
+            log.error(
+                "agent decision json parse failed after_retry err=%s raw_preview=%s",
+                e,
+                (content[:200] + "…") if len(content) > 200 else content,
+            )
             return (
                 state,
                 FinishAction(
@@ -222,6 +232,7 @@ async def decision(
     try:
         plan = Plan.model_validate(parsed)
     except Exception as e:
+        log.error("agent decision plan validation failed err=%s", e)
         return (
             state,
             FinishAction(
@@ -239,6 +250,10 @@ async def decision(
     return (next_state, OutputPlanAction(payload=plan))
 
 
+# 多轮循环与 LangGraph 编排已迁移到 `orchestrator.py` 的
+# `run_agent_orchestrated`；此处仅保留 `decision` 单步与工具辅助。
+
+
 def _state_after_turn(state: AgentState) -> AgentState:
     """返回进入下一轮后的 state（current_turn + 1）。"""
     return AgentState(
@@ -252,35 +267,6 @@ def _state_after_turn(state: AgentState) -> AgentState:
         cloud_model_id=state.cloud_model_id,
         local_model_id=state.local_model_id,
     )
-
-
-async def run_agent_loop(
-    initial_state: AgentState,
-) -> tuple[AgentState, AgentAction]:
-    """
-    Agent 循环：反复 decision → 根据 action 更新 state 或结束。
-
-    - output_plan / finish / ask_clarification：立即返回 (state, action)，由调用方处理。
-    - call_tool：占位执行（当前无工具实现），将占位结果写入 state.messages 后继续循环。
-    """
-    state = initial_state
-
-    while True:
-        if state.current_turn >= state.max_turns:
-            return (state, FinishAction(FinishPayload(reason="max_turns")))
-
-        state, action = await decision(state)
-        kind = action_kind(action)
-
-        if kind == "output_plan":
-            return (state, action)
-        if kind == "finish":
-            return (state, action)
-        if kind == "ask_clarification":
-            return (state, action)
-
-        if kind == "call_tool":
-            state = run_tool_and_append_messages(state, action)
 
 
 def _maybe_need_clarification(
