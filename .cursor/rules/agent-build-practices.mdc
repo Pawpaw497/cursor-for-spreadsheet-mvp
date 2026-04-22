@@ -1,0 +1,30 @@
+---
+description: Agent 与编排层沿用主流模式（多轮 LLM + 工具 + 状态），避免自研调度与“从头造轮子”
+globs: server/**/*.py
+alwaysApply: false
+---
+
+# Agent 构建：主流模式优先
+
+在 `server` 中扩展与改造 Agent 时，**对齐行业常见的工具型 Agent 形态**（多轮对话、带 tools 的 LLM 调用、显式 state/actions），在既有骨架上增量演进，**不要**为 Demo 自研一套并行的“调度器 / 消息总线 / 新 DSL 运行时”。
+
+## 与当前仓库的落点
+
+- 同步与流式 API 在 `app/api/routes/agent.py`；**单步决策**在 `app/agents/decision.py` 的 `decision`；**多轮主循环**在 `run_agent_loop`。
+- 状态与动作：Pydantic / 结构化 `AgentState`、`AgentAction`（见 `app/agents/actions.py`）；工具规格与实现放在 `app/services/tools.py`，LLM 侧通过 `get_tools_spec_for_llm` 等与 OpenAI-兼容的 tools 协议衔接。
+- 新能力时优先：**加工具、补 prompt、在既有循环与校验里接好**，而不是新起一个独立 Agent 栈。
+
+## 推荐做法
+
+- 参考 LangGraph / ReAct 等**已有范式的结构**来命名与拆分节点，若引入图编排，**沿用 LangGraph 的 StateGraph/compile/invoke 等官方用法**，与 `BaseAgent._build_graph` 等扩展点一致，而非手写图执行机。
+- 与 LLM 的交互**继续走** `app/services/llm.py`（含 tool_calls / 流式）**与现有 Message 形状**，避免同一套产品里并存多套互不兼容的 chat schema。
+- 需要“记忆/步骤上限/中止条件”时，在 **`run_agent_loop` 与 `AgentState` 上显式加字段与分支**，而不是隐式全局变量。
+
+## 避免的做法
+
+- 从头实现通用 Agent 执行引擎、自研与 OpenAI tools 不兼容的 tool 协议、或为单一需求复制整条调用链到另一包名。
+
+```text
+✅ 在 tools 中增加工具，并在 decision/循环中消费 tool 结果
+❌ 新建 package，自行维护另一套 "while True: llm → parse" 且不共享 state
+```

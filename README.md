@@ -101,7 +101,8 @@ flowchart LR
 ### 步骤 0：克隆项目并准备基础环境
 
 1. 确认本机已安装：
-   - **Python 3.10+**：在终端执行 `python3 --version` 检查。
+   - **Python 3.10+**：在终端执行 `python3 --version` 检查（`uv` 也可按需下载并管理解释器）。
+   - **[uv](https://docs.astral.sh/uv/)**（推荐）：用于锁定并安装后端依赖；若尚未安装，可参考官方文档或使用 `curl -LsSf https://astral.sh/uv/install.sh | sh`。
    - **Node.js 18+**：在终端执行 `node -v` 检查。
 2. 克隆仓库并进入根目录：
 
@@ -110,7 +111,7 @@ git clone <your-repo-url> spreadsheet-cursor
 cd spreadsheet-cursor
 ```
 
-> 如需隔离 Python 依赖，推荐在 `server` 目录中使用 `python3 -m venv venv && source venv/bin/activate` 创建虚拟环境（可选）。
+> 后端依赖由 `uv` 管理：在 `server` 目录执行 `uv sync` 后，会在 `server/.venv` 下创建虚拟环境并安装 `pyproject.toml` / `uv.lock` 中的依赖。
 
 ### 步骤 1：准备 LLM（云端 OpenRouter 或本地 Ollama）
 
@@ -156,9 +157,11 @@ cp .env.example .env
 3. 安装后端依赖并启动服务：
 
 ```bash
-pip install -r requirements.txt
-uvicorn main:app --reload --port 8787
+uv sync
+uv run uvicorn main:app --reload --port 8787
 ```
+
+   若希望手动激活虚拟环境，可执行 `source .venv/bin/activate`（Windows 为 `.venv\Scripts\activate`），再运行 `uvicorn main:app --reload --port 8787`。
 
 4. 启动成功后，可以在浏览器访问 `http://localhost:8787/api/config` 或 `http://localhost:8787/docs`，确认接口正常。
    - 如果调用云端模型但未配置 `OPENROUTER_API_KEY`，`/api/plan` 会返回带 `[400]` 前缀的参数错误。
@@ -243,7 +246,7 @@ npm run dev
     - `state.py`：`AgentState`（包含 tables、messages、applied_plans_summary、conversation 等）、`TableContext`、`initial_state_from_*`
     - `actions.py`：动作枚举（`call_tool` / `output_plan` / `ask_clarification` / `finish`）及各类 payload
     - `decision.py`：`decision(state) → (state, action)`（支持 tools 与澄清）、`run_agent_loop(initial_state) → (state, action)`
-- **入口**：`uvicorn main:app`，`main.py` 挂载 `app.main.app`。
+- **依赖**：`pyproject.toml` + `uv.lock`（`uv sync`）；**入口**：`uv run uvicorn main:app` 或激活 `.venv` 后 `uvicorn main:app`，`main.py` 挂载 `app.main.app`。
 
 ---
 

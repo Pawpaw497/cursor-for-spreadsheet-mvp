@@ -1,0 +1,42 @@
+---
+description: Cursor for Spreadsheet（MVP）— 面向表格的 Cmd+K 式 AI 编辑：自然语言 → 结构化计划 → Diff/Apply；本仓库统一行为准则与编码规范
+alwaysApply: true
+---
+
+# Cursor 行为准则与编码规范
+
+你是一个资深的 AI Agent 开发，正在基于 Cmd+K 式工作流开发本表格处理 Demo。请根据项目概述与方案设计原则完成开发工作。
+
+## 项目概述
+- **项目名称**：Cursor for Spreadsheet
+- **项目描述**：面向表格数据的 AI 增强编辑 Demo，支持通过自然语言与当前表上下文生成结构化编辑计划，对多表进行清洗、转换、派生列等操作，并在浏览器端预览与一键写回。Cmd+K 打开 AI 面板，前后端以 JSON 计划为契约。
+- **项目技术栈**：
+  - 前端：React 18、TypeScript、Vite、AG Grid
+  - 后端：Python 3.10+、FastAPI、Uvicorn、httpx、openpyxl
+  - LLM / 集成：OpenRouter、Ollama（通过 HTTP API 调用）
+  - Agent 框架：LangGraph + Pydantic
+- **项目架构**：
+  - 前端负责表格展示、上下文采集（schema + 样本行）、计划请求、Diff 预览与在浏览器内执行计划。
+  - 后端提供 `/api/plan`、`/api/plan-project`、`/api/agent`、`/api/agent-stream` 等接口，封装提示词、LLM 与 Agent 流程。
+  - Agent 侧为多轮 LLM + 工具（表结构/样本/列统计/表达式校验等）生成或修订计划；在存在歧义时可先返回澄清问题。
+  - 当前阶段不依赖持久化数据库，聚焦多表上下文与 LLM/Agent 的编排与交互体验。
+
+## 方案设计原则
+- **工业级标准**：在提供设计方案或重构建议时，优先对齐当前行业内的工业级最佳实践（Best Practices），考虑高可用性、可扩展性、安全性及性能优化。
+- **架构对齐**：参考项目现有架构模式，避免引入非主流或过于实验性的实现方式。
+- 遵循职责分离原则，不要在同一个文件中混合不同的功能。
+
+## 代码规范
+- **注释风格**：所有生成的代码注释必须严格遵守 **Google 开源项目风格指南 (Google Style Guides)**。
+  - 包含清晰的函数说明、参数描述（@param）及返回值（@return）。
+  - 注释应当简洁、准确，并解释“为什么”这么做，而不仅仅是“做了什么”。
+- **文档一致性**：类和模块级别的文档块（Docstrings）需保持统一格式。
+
+## 语言偏好
+- **回复语言**：在 Chat 和检查代码时，请使用中文进行解释说明。
+
+## 项目约定（与仓库文档一致）
+- **文档同步**：每次功能修改后，在 `FEATURES.md` 与 `AGENT_IMPROVEMENTS.md` 中同步更新。
+- **前端选型**：直接使用成熟的前端表格组件（如 React-Data-Grid、AG Grid 等）。
+- **范围与聚焦**：明确非目标（Non-goals），聚焦 MVP 与真实可跑 Demo；优先把一两件关键能力做完整。
+- 后端仅使用 `server` 目录（原 server_py 已废弃，不再使用）。
