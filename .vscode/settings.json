@@ -1,7 +1,7 @@
 {
-    "python.languageServer": "None",
-    "python.defaultInterpreterPath": "${workspaceFolder}/server/.venv/bin/python",
-    "python-envs.defaultEnvManager": "ms-python.python:conda",
-    "python-envs.defaultPackageManager": "ms-python.python:conda",
-    "python-envs.pythonProjects": []
+  "python.languageServer": "None",
+  "python.defaultInterpreterPath": "${workspaceFolder}/server/.venv/Scripts/python.exe",
+  "python-envs.defaultEnvManager": "ms-python.python:venv",
+  "python-envs.defaultPackageManager": "ms-python.python:venv",
+  "python-envs.pythonProjects": ["${workspaceFolder}/server"]
 }
