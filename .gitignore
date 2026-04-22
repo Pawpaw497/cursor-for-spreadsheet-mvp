@@ -162,4 +162,5 @@ vite.config.ts.timestamp-*
 
 server/.env 
 
-/scripts/
+scripts/
+docs/

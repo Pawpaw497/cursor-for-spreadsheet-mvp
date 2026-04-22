@@ -4,13 +4,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Literal, Optional
 
-from app.models.plan import (
-    AgentProjectPlanRequest,
-    ConversationTurn,
-    PlanRequest,
-    ProjectPlanRequest,
-    TableInfo,
-)
+from app.models.plan import (AgentProjectPlanRequest, PlanRequest,
+                             ProjectPlanRequest, TableInfo)
+from pydantic import BaseModel
 
 
 @dataclass
@@ -25,8 +21,7 @@ class TableContext:
         return cls(name=t.name, schema=t.schema_, sample_rows=t.sampleRows)
 
 
-@dataclass
-class AgentState:
+class AgentState(BaseModel):
     """
     Agent 的显式状态：循环每轮更新，供 decision 读取、流式推送与记忆使用。
 
@@ -41,9 +36,9 @@ class AgentState:
     """
 
     tables: List[TableContext]
-    messages: List[Dict[str, str]]  # {"role": "system"|"user"|"assistant", "content": str}
+    messages: List[Dict[str, str]]
     applied_plans_summary: Optional[str] = None
-    conversation: List[Dict[str, str]] = field(default_factory=list)
+    conversation: List[Dict[str, str]] = []
     current_turn: int = 0
     max_turns: int = 10
     user_prompt: str = ""
@@ -52,7 +47,10 @@ class AgentState:
     local_model_id: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
-        """便于日志或 SSE 推送的字典表示（不含完整 messages 时可截断）。"""
+        """便于日志或 SSE 推送的字典表示（不含完整 messages 时可截断）。
+
+        @return: 返回包含部分关键 Agent 状态统计的 dict，用于 SSE 事件或日志简报。
+        """
         return {
             "current_turn": self.current_turn,
             "max_turns": self.max_turns,

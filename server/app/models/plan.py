@@ -1,6 +1,7 @@
 """Plan 相关 Schema。"""
 from typing import Any, Dict, List, Literal, Optional, Union
 
+from langchain.tools import tool
 from pydantic import BaseModel, ConfigDict, Field
 
 TransformKind = Literal["trim", "lower", "upper", "replace", "parse_date"]
