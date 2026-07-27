@@ -124,6 +124,73 @@ describe("mapAgentStreamEventsToResult", () => {
     }
   });
 
+  it("defaults summary to null when absent (p1-preview-summary-wire首包)", () => {
+    const plan = {
+      intent: "t",
+      steps: [{ action: "add_column", name: "c", expression: "1" }]
+    };
+    const result = mapAgentStreamEventsToResult([
+      {
+        kind: "preview_ready",
+        data: {
+          plan,
+          preview: {
+            id: "pv1",
+            plan,
+            diff: {
+              addedColumns: ["c"],
+              modifiedColumns: [],
+              validationWarnings: [],
+              validationErrors: []
+            },
+            newTables: [],
+            status: "pending",
+            created_at: 1
+          },
+          state: {}
+        }
+      }
+    ]);
+    expect(result.kind).toBe("preview_ready");
+    if (result.kind === "preview_ready") {
+      expect(result.summary).toBeNull();
+    }
+  });
+
+  it("passes through a populated summary field", () => {
+    const plan = {
+      intent: "t",
+      steps: [{ action: "add_column", name: "c", expression: "1" }]
+    };
+    const result = mapAgentStreamEventsToResult([
+      {
+        kind: "preview_ready",
+        data: {
+          plan,
+          preview: {
+            id: "pv1",
+            plan,
+            diff: {
+              addedColumns: ["c"],
+              modifiedColumns: [],
+              validationWarnings: [],
+              validationErrors: []
+            },
+            newTables: [],
+            status: "pending",
+            created_at: 1
+          },
+          state: {},
+          summary: "Added column c."
+        }
+      }
+    ]);
+    expect(result.kind).toBe("preview_ready");
+    if (result.kind === "preview_ready") {
+      expect(result.summary).toBe("Added column c.");
+    }
+  });
+
   it("maps plan_done to plan result", () => {
     const plan = {
       intent: "t",

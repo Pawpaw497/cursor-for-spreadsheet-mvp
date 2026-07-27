@@ -6,7 +6,7 @@ from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
-from app.models.table_models import DataContext
+from app.models.table_models import DataContext, PrePlanContext
 
 PreviewStatus = Literal["pending", "aborted", "committed", "revised"]
 PreviewDecisionKind = Literal["confirm", "abort", "revise"]
@@ -61,6 +61,8 @@ class AgentState(BaseModel):
     - max_turns: 最大轮数，超过则强制结束。
     - user_prompt: 用户本轮/首次输入的自然语言请求。
     - model_source / cloud_model_id / local_model_id: LLM 调用配置。
+    - pre_plan_context: pre_plan 子代理的表级裁剪结果（选中表/confidence/fallback 原因）；
+      None 表示尚未跑过 pre_plan 或裁剪不适用（如单表/无表）。
     """
 
     tables: List[TableContext]
@@ -79,6 +81,7 @@ class AgentState(BaseModel):
     local_model_id: Optional[str] = None
     request_context: Optional[Any] = None
     data_context: Optional[DataContext] = None
+    pre_plan_context: Optional[PrePlanContext] = None
 
     def to_dict(self) -> Dict[str, Any]:
         """便于日志或 SSE 推送的字典表示（不含完整 messages 时可截断）。

@@ -76,11 +76,20 @@ class FinishAction:
 
 @dataclass
 class PreviewReadyPayload:
-    """preview_ready：dry-run 成功后的终端动作，携带紧凑预览元数据。"""
+    """preview_ready：dry-run 成功后的终端动作，携带紧凑预览元数据。
+
+    ``summary``：见 .cursor/plans/agent-evolution-p1-v2-core.plan.md（p1-preview-summary-wire，
+    方案 A）。首包恒为 ``None``——摘要异步生成，不阻塞 preview_ready 本身
+    （p1-preview-summary-async 落地前，本字段在两条响应路径上都只会是 None）。
+    生成完成后通过独立 SSE 事件 ``preview_summary_ready``（payload:
+    ``{"previewId": str, "summary": str}``）补发；sync ``/api/agent`` 客户端
+    不 await 生成，接受首包无摘要。
+    """
 
     plan: Plan
     preview: PreviewRecord
     warnings: Optional[List[str]] = None
+    summary: Optional[str] = None
 
 
 @dataclass

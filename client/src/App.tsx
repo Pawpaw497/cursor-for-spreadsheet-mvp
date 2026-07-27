@@ -61,6 +61,15 @@ import {
   resolveModelPreference,
   saveModelPreference,
 } from "./modelPreferenceStorage";
+import type { CustomModels } from "./customModelStorage";
+import {
+  addCustomModel,
+  loadCustomModels,
+  mergeCustomModels,
+  normalizeCustomModelInput,
+  removeCustomModel,
+  saveCustomModels,
+} from "./customModelStorage";
 import {
   BUILTIN_SAMPLE_WORKSPACE_KEY,
   debouncedSaveWorkspaceHistory,
@@ -251,11 +260,15 @@ function schemaToColDefs(
   return [ROW_NUM_COL, ...dataCols];
 }
 
-function previewReadyStatusMessage(warnings?: string[]): string {
+function previewReadyStatusMessage(warnings?: string[], summary?: string | null): string {
   const base =
     "服务器预览已就绪：Apply 写回、Abort 放弃预览，或输入修订说明后点 Revise。";
-  if (!warnings?.length) return base;
-  return `${base} （已达修订上限：${warnings.join(" ")}）`;
+  let msg = warnings?.length ? `${base} （已达修订上限：${warnings.join(" ")}）` : base;
+  if (summary) {
+    // p1-preview-summary-wire：摘要须搭配免责声明——异步生成，可能有误。
+    msg += ` AI 摘要：${summary}（AI 生成，可能有误，请以 Diff 为准）`;
+  }
+  return msg;
 }
 
 export default function App() {
@@ -283,7 +296,15 @@ export default function App() {
   const [modelSource, setModelSource] = useState<"cloud" | "local">(
     initialModelPreference?.modelSource ?? "cloud"
   );
-  const [modelOptions, setModelOptions] = useState<ConfigResponse | null>(null);
+  const [serverConfig, setServerConfig] = useState<ConfigResponse | null>(null);
+  const [customModels, setCustomModels] = useState<CustomModels>(() => loadCustomModels());
+  const [customModelId, setCustomModelId] = useState("");
+  const [customModelLabel, setCustomModelLabel] = useState("");
+  const [customModelError, setCustomModelError] = useState("");
+  const modelOptions = useMemo(
+    () => (serverConfig ? mergeCustomModels(serverConfig, customModels) : null),
+    [serverConfig, customModels]
+  );
   const [cloudModelId, setCloudModelId] = useState<string>(
     initialModelPreference?.cloudModelId ?? ""
   );
@@ -800,13 +821,16 @@ export default function App() {
           setServerBootId(c.serverBootId);
         }
         setSessionMemoryEnabled(!!c.sessionMemoryEnabled);
-        setModelOptions(c);
-        const resolved = resolveModelPreference(loadModelPreference(), c);
+        setServerConfig(c);
+        const resolved = resolveModelPreference(
+          loadModelPreference(),
+          mergeCustomModels(c, loadCustomModels())
+        );
         setModelSource(resolved.modelSource);
         setCloudModelId(resolved.cloudModelId);
         setLocalModelId(resolved.localModelId);
       })
-      .catch(() => setModelOptions(null));
+      .catch(() => setServerConfig(null));
   }, []);
 
   useEffect(() => {
@@ -832,6 +856,37 @@ export default function App() {
     if (!modelOptions || !cloudModelId || !localModelId) return;
     saveModelPreference({ modelSource, cloudModelId, localModelId });
   }, [modelOptions, modelSource, cloudModelId, localModelId]);
+
+  const handleAddCustomModel = useCallback(() => {
+    const option = normalizeCustomModelInput(customModelId, customModelLabel);
+    if (!option) {
+      setCustomModelError("模型 ID 不能为空，且不能包含空格");
+      return;
+    }
+    setCustomModels((prev) => {
+      const next = addCustomModel(prev, modelSource, option);
+      saveCustomModels(next);
+      return next;
+    });
+    if (modelSource === "cloud") setCloudModelId(option.id);
+    else setLocalModelId(option.id);
+    setCustomModelId("");
+    setCustomModelLabel("");
+    setCustomModelError("");
+    logInfo("custom_model_add", { source: modelSource, modelId: option.id });
+  }, [customModelId, customModelLabel, modelSource]);
+
+  const handleRemoveCustomModel = useCallback(
+    (id: string) => {
+      setCustomModels((prev) => {
+        const next = removeCustomModel(prev, modelSource, id);
+        saveCustomModels(next);
+        return next;
+      });
+      logInfo("custom_model_remove", { source: modelSource, modelId: id });
+    },
+    [modelSource]
+  );
 
   const isProjectMode = tableNames.length > 1;
 
@@ -1232,7 +1287,7 @@ export default function App() {
           mode: "agent_clarification_resolved_preview"
         });
         appendChatMessagesFromPlan(resumePrompt, nextPlan);
-        setStatus(previewReadyStatusMessage(agentRes.warnings));
+        setStatus(previewReadyStatusMessage(agentRes.warnings, agentRes.summary));
         return;
       }
 
@@ -1399,7 +1454,7 @@ export default function App() {
           };
           return [entry, ...prev];
         });
-        setStatus(previewReadyStatusMessage(agentRes.warnings));
+        setStatus(previewReadyStatusMessage(agentRes.warnings, agentRes.summary));
         return;
       }
       setStatus("Unexpected agent response.");
@@ -1616,11 +1671,16 @@ export default function App() {
         const rc = Number(st.revision_count ?? st.revisionCount ?? 0);
         setAgentRevisionCount(Number.isFinite(rc) ? rc : 0);
         appendChatMessagesFromPlan(extra, agentRes.plan);
-        setStatus(
-          agentRes.warnings?.length
+        {
+          const reviseBase = agentRes.warnings?.length
             ? previewReadyStatusMessage(agentRes.warnings)
-            : "已根据修订生成新的服务器预览。"
-        );
+            : "已根据修订生成新的服务器预览。";
+          setStatus(
+            agentRes.summary
+              ? `${reviseBase} AI 摘要：${agentRes.summary}（AI 生成，可能有误，请以 Diff 为准）`
+              : reviseBase
+          );
+        }
         logInfo("preview_revise", { traceId });
         return;
       }
@@ -2194,6 +2254,52 @@ export default function App() {
                         ))}
                       </select>
                     )}
+                    <details className="custom-model-panel">
+                      <summary>自定义模型</summary>
+                      <div className="custom-model-form">
+                        <input
+                          className="custom-model-input"
+                          value={customModelId}
+                          onChange={(e) => {
+                            setCustomModelId(e.target.value);
+                            setCustomModelError("");
+                          }}
+                          placeholder={
+                            modelSource === "cloud" ? "如 anthropic/claude-opus-4" : "如 llama3.1:8b"
+                          }
+                          aria-label="自定义模型 ID"
+                        />
+                        <input
+                          className="custom-model-input"
+                          value={customModelLabel}
+                          onChange={(e) => setCustomModelLabel(e.target.value)}
+                          placeholder="显示名（可选）"
+                          aria-label="自定义模型显示名"
+                        />
+                        <button type="button" onClick={handleAddCustomModel}>
+                          添加
+                        </button>
+                      </div>
+                      {customModelError && (
+                        <div className="custom-model-error">{customModelError}</div>
+                      )}
+                      {customModels[modelSource].length > 0 && (
+                        <ul className="custom-model-list">
+                          {customModels[modelSource].map((m) => (
+                            <li key={m.id}>
+                              <span title={m.id}>{m.label}</span>
+                              <button
+                                type="button"
+                                onClick={() => handleRemoveCustomModel(m.id)}
+                                aria-label={`删除 ${m.id}`}
+                              >
+                                ×
+                              </button>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </details>
                   </div>
                   <details className="workspace-rules-panel small">
                     <summary>Workspace rules (optional)</summary>

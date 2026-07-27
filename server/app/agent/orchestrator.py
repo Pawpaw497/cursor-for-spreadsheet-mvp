@@ -1,4 +1,4 @@
-"""LangGraph 编排：context_analyzer → intent_analyzer → ReAct（llm_decide ↔ tool_exec）。"""
+"""LangGraph 编排：context_analyzer → intent_analyzer → clarify_scan → pre_plan → ReAct（llm_decide ↔ tool_exec）。"""
 from __future__ import annotations
 
 import asyncio
@@ -33,10 +33,37 @@ from app.services.agent_preview import (
     evaluate_output_plan_preview,
 )
 from app.services.plan_executor import TableData
+from app.agent.sub_agents.clarify_scan import run_clarify_scan
 from app.agent.sub_agents.context_analyzer import analyze_context
 from app.agent.sub_agents.intent_analyzer import analyze_intent
+from app.agent.sub_agents.pre_plan import restore_full_data_context, run_pre_plan
+from app.agent.sub_agents.preview_summary import generate_preview_summary
 
 log = get_logger("agent.orchestrator")
+
+# SSE 流收尾前愿意为 preview_summary 多等的上限；超时/异常一律跳过
+# preview_summary_ready，不影响 preview_ready/plan_done 已发出的基础响应
+# （p1-preview-summary-async）。
+PREVIEW_SUMMARY_TIMEOUT_S = 5.0
+
+
+def _is_pruned_plan_validation_failure(state: AgentState, action: AgentAction) -> bool:
+    """True 当且仅当本轮以 plan_validation_failed 结束，且 pre_plan 确实裁剪过表。
+
+    用于 ``agent_react_step`` 判断是否值得回退全量 Context 重试一次
+    （p1-pre-plan-guards：裁剪导致下游 Plan 校验失败时不应静默产出错误结果）。
+    """
+    if action_kind(action) != "finish":
+        return False
+    payload = cast(FinishAction, action).payload
+    reason = payload.reason if payload else ""
+    if not reason.startswith("plan_validation_failed"):
+        return False
+    ctx = state.pre_plan_context
+    if ctx is None:
+        return False
+    all_names = {t.table_name for t in (state.data_context.tables if state.data_context else [])}
+    return set(ctx.selected_table_names) != all_names
 
 
 async def agent_react_step(
@@ -44,9 +71,22 @@ async def agent_react_step(
     *,
     use_tools: bool = True,
 ) -> tuple[AgentState, AgentAction]:
-    """Single ReAct LLM turn shared by sync graph ``llm_decide`` and SSE stream."""
-    state = apply_message_compaction(state)
-    return await pa_decision_step(state, use_tools=use_tools)
+    """Single ReAct LLM turn shared by sync graph ``llm_decide`` and SSE stream.
+
+    plan_validation_failed 且 pre_plan 裁剪过表时，回退全量 Context 重试一次
+    （见 ``_is_pruned_plan_validation_failure``）；重试后 ``pre_plan_context``
+    变为全选，不会二次触发，避免无限重试。
+    """
+    compacted = apply_message_compaction(state)
+    new_state, action = await pa_decision_step(compacted, use_tools=use_tools)
+    if _is_pruned_plan_validation_failure(new_state, action):
+        log.info(
+            "agent_react_step: plan_validation_failed with pruned pre_plan context, "
+            "retrying once with full context"
+        )
+        restored = apply_message_compaction(restore_full_data_context(new_state))
+        return await pa_decision_step(restored, use_tools=use_tools)
+    return new_state, action
 
 
 class AgentGraphState(TypedDict, total=False):
@@ -112,6 +152,33 @@ async def _node_intent(s: AgentGraphState) -> AgentGraphState:
     return {"agent": out.model_dump(), "scratch": dict(s.get("scratch") or {})}
 
 
+async def _node_clarify_scan(s: AgentGraphState) -> AgentGraphState:
+    """clarify_scan：Plan 生成前 LLM 软扫描语义歧义；命中则终止本轮，不进入 pre_plan/llm_decide。"""
+    agent = AgentState.model_validate(s["agent"])
+    action = await run_clarify_scan(agent)
+    scratch: dict = {}
+    if action is not None:
+        scratch["route"] = "clarify"
+        scratch["ser_action"] = _serialize_terminal_action(action)
+    else:
+        scratch["route"] = "continue"
+    return {"agent": agent.model_dump(), "scratch": scratch}
+
+
+def _after_clarify_scan(s: AgentGraphState) -> str:
+    r = s.get("scratch", {}).get("route")
+    if r == "clarify":
+        return "end"
+    return "continue"
+
+
+async def _node_pre_plan(s: AgentGraphState) -> AgentGraphState:
+    """pre_plan：Plan 生成前对 DataContext 做表级裁剪（同步阻塞，800ms 超时 fallback）。"""
+    agent = AgentState.model_validate(s["agent"])
+    out = await run_pre_plan(agent)
+    return {"agent": out.model_dump(), "scratch": dict(s.get("scratch") or {})}
+
+
 async def _node_llm_decide(s: AgentGraphState) -> AgentGraphState:
     """llm 决策（invoke_llm）：委托共享 ``agent_react_step``。"""
     agent = AgentState.model_validate(s["agent"])
@@ -159,11 +226,19 @@ def build_agent_graph() -> StateGraph:
     g = StateGraph(AgentGraphState)  # type: ignore[valid-type]
     g.add_node("context_analyzer", _node_context)
     g.add_node("intent_analyzer", _node_intent)
+    g.add_node("clarify_scan", _node_clarify_scan)
+    g.add_node("pre_plan", _node_pre_plan)
     g.add_node("llm_decide", _node_llm_decide)
     g.add_node("tool_exec", _node_tool)
     g.add_edge(START, "context_analyzer")
     g.add_edge("context_analyzer", "intent_analyzer")
-    g.add_edge("intent_analyzer", "llm_decide")
+    g.add_edge("intent_analyzer", "clarify_scan")
+    g.add_conditional_edges(
+        "clarify_scan",
+        _after_clarify_scan,
+        {"continue": "pre_plan", "end": END},
+    )
+    g.add_edge("pre_plan", "llm_decide")
     g.add_conditional_edges(
         "llm_decide",
         _after_llm,
@@ -259,6 +334,34 @@ def _sse(event: str, data: dict) -> str:
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 
+async def _drain_preview_summary(
+    task: "asyncio.Task[str | None]", preview_id: str
+) -> AsyncIterator[str]:
+    """摘要 task 已在 preview_ready 时启动；plan_done 后有限等待一次，成功则补发。
+
+    超时/异常都只记日志、不 yield（不影响已发出的 preview_ready/plan_done，也不
+    让摘要失败传播成 SSE 流错误——与 revision-cap/degraded-preview 等既有终止
+    路径互不干扰，本函数不触碰那些分支）。
+    """
+    try:
+        summary = await asyncio.wait_for(task, timeout=PREVIEW_SUMMARY_TIMEOUT_S)
+    except asyncio.TimeoutError:
+        task.cancel()
+        log.info(
+            "stream_agent_events: preview_summary timed out after %.1fs, skipping "
+            "preview_summary_ready",
+            PREVIEW_SUMMARY_TIMEOUT_S,
+        )
+        return
+    except Exception:
+        log.warning(
+            "stream_agent_events: preview_summary generation failed", exc_info=True
+        )
+        return
+    if summary:
+        yield _sse("preview_summary_ready", {"previewId": preview_id, "summary": summary})
+
+
 async def stream_agent_events(
     state: AgentState,
     *,
@@ -294,7 +397,7 @@ async def stream_agent_events(
             if event.get("event") != "on_chain_end":
                 continue
             ev_name = event.get("name")
-            if ev_name not in ("llm_decide", "tool_exec"):
+            if ev_name not in ("clarify_scan", "llm_decide", "tool_exec"):
                 continue
 
             output = (event.get("data") or {}).get("output") or {}
@@ -304,7 +407,12 @@ async def stream_agent_events(
             agent_out = AgentState.model_validate(output["agent"])
             scratch = output.get("scratch") or {}
 
-            if ev_name == "llm_decide":
+            if ev_name == "clarify_scan":
+                if scratch.get("route") == "clarify":
+                    ser = scratch.get("ser_action")
+                    if ser:
+                        terminal_action = _deserialize_terminal_action(ser)
+            elif ev_name == "llm_decide":
                 route = scratch.get("route")
                 if route == "tool":
                     pending = scratch.get("pending_ct") or {}
@@ -348,6 +456,8 @@ async def stream_agent_events(
             opa = cast(OutputPlanAction, terminal_action)
             plan_obj = opa.payload
             plan_dump = plan_to_wire_dict(plan_obj)
+            summary_task: "asyncio.Task[str | None] | None" = None
+            preview_id: str | None = None
             if preview_lifecycle and execution_tables is not None:
                 preview_eval = evaluate_output_plan_preview(
                     agent_out, plan_obj, execution_tables
@@ -366,6 +476,17 @@ async def stream_agent_events(
                     return
                 ready = cast(PreviewEvaluationReady, preview_eval)
                 agent_out = ready.agent
+                # 与 preview_ready 并发启动，不阻塞其发出；plan_done 后有限等待补发
+                # （p1-preview-summary-async，见 _drain_preview_summary）。
+                summary_task = asyncio.create_task(
+                    generate_preview_summary(
+                        ready.record,
+                        agent_out.model_source,
+                        cloud_model_id=agent_out.cloud_model_id,
+                        local_model_id=agent_out.local_model_id,
+                    )
+                )
+                preview_id = ready.record.id
                 preview_payload: dict[str, Any] = {
                     "plan": plan_dump,
                     "preview": preview_record_to_wire_dict(ready.record),
@@ -374,6 +495,10 @@ async def stream_agent_events(
                         for h in agent_out.preview_history
                     ],
                     "state": agent_out.to_dict(),
+                    # p1-preview-summary-wire 方案 A：首包恒为 None，摘要就绪后由
+                    # p1-preview-summary-async 通过独立的 "preview_summary_ready"
+                    # SSE 事件（payload: {"previewId": str, "summary": str}）补发。
+                    "summary": None,
                 }
                 if ready.warnings:
                     preview_payload["warnings"] = list(ready.warnings)
@@ -382,6 +507,9 @@ async def stream_agent_events(
                 "plan_done",
                 {"plan": plan_dump, "state": agent_out.to_dict()},
             )
+            if summary_task is not None:
+                async for chunk in _drain_preview_summary(summary_task, preview_id):
+                    yield chunk
             return
 
         if kind == "finish":

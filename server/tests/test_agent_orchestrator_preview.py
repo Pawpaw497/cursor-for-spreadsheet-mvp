@@ -150,6 +150,9 @@ def test_stream_agent_events_preview_retries_then_ready() -> None:
         with patch(
             "app.agent.orchestrator.agent_react_step",
             side_effect=mock_react_step,
+        ), patch(
+            "app.agent.orchestrator.generate_preview_summary",
+            new=AsyncMock(return_value=None),
         ):
             async for chunk in stream_agent_events(
                 state,
@@ -186,6 +189,9 @@ def test_stream_agent_events_preview_cap_degraded_ready() -> None:
         with patch(
             "app.agent.orchestrator.agent_react_step",
             side_effect=mock_react_step,
+        ), patch(
+            "app.agent.orchestrator.generate_preview_summary",
+            new=AsyncMock(return_value=None),
         ):
             async for chunk in stream_agent_events(
                 state,
@@ -201,6 +207,109 @@ def test_stream_agent_events_preview_cap_degraded_ready() -> None:
         assert preview_events[0].get("warnings")
         finishes = [name for name, _ in events if name == "finish"]
         assert not finishes
+
+    asyncio.run(run())
+
+
+def test_stream_agent_events_emits_preview_summary_ready_when_generated() -> None:
+    """p1-preview-summary-async：摘要生成成功时，plan_done 后补发 preview_summary_ready。"""
+
+    async def run() -> None:
+        state = _agent_state()
+        tables = _tables()
+
+        async def mock_react_step(s: AgentState, *, use_tools: bool = True):
+            return s, OutputPlanAction(payload=_good_plan())
+
+        chunks: list[str] = []
+        with patch(
+            "app.agent.orchestrator.agent_react_step",
+            side_effect=mock_react_step,
+        ), patch(
+            "app.agent.orchestrator.generate_preview_summary",
+            new=AsyncMock(return_value="Added column x."),
+        ):
+            async for chunk in stream_agent_events(
+                state, preview_lifecycle=True, execution_tables=tables
+            ):
+                chunks.append(chunk)
+
+        events = _parse_sse_events(chunks)
+        names = [n for n, _ in events]
+        assert names[-3:] == ["preview_ready", "plan_done", "preview_summary_ready"]
+        summary_ev = next(d for n, d in events if n == "preview_summary_ready")
+        assert summary_ev["summary"] == "Added column x."
+        preview_ev = next(d for n, d in events if n == "preview_ready")
+        assert summary_ev["previewId"] == preview_ev["preview"]["id"]
+
+    asyncio.run(run())
+
+
+def test_stream_agent_events_skips_preview_summary_ready_on_timeout() -> None:
+    """超时（>PREVIEW_SUMMARY_TIMEOUT_S）：不补发事件，plan_done 仍是流的终点。"""
+
+    async def run() -> None:
+        state = _agent_state()
+        tables = _tables()
+
+        async def mock_react_step(s: AgentState, *, use_tools: bool = True):
+            return s, OutputPlanAction(payload=_good_plan())
+
+        async def _slow_summary(*args, **kwargs):
+            await asyncio.sleep(10)
+            return "too late"
+
+        chunks: list[str] = []
+        with patch(
+            "app.agent.orchestrator.agent_react_step",
+            side_effect=mock_react_step,
+        ), patch(
+            "app.agent.orchestrator.generate_preview_summary",
+            new=_slow_summary,
+        ), patch("app.agent.orchestrator.PREVIEW_SUMMARY_TIMEOUT_S", 0.01):
+            async for chunk in stream_agent_events(
+                state, preview_lifecycle=True, execution_tables=tables
+            ):
+                chunks.append(chunk)
+
+        events = _parse_sse_events(chunks)
+        names = [n for n, _ in events]
+        assert names[-1] == "plan_done"
+        assert "preview_summary_ready" not in names
+
+    asyncio.run(run())
+
+
+def test_stream_agent_events_skips_preview_summary_ready_on_error() -> None:
+    """摘要生成异常：不补发事件、不影响已发出的 preview_ready/plan_done。"""
+
+    async def run() -> None:
+        state = _agent_state()
+        tables = _tables()
+
+        async def mock_react_step(s: AgentState, *, use_tools: bool = True):
+            return s, OutputPlanAction(payload=_good_plan())
+
+        async def _boom(*args, **kwargs):
+            raise RuntimeError("summary boom")
+
+        chunks: list[str] = []
+        with patch(
+            "app.agent.orchestrator.agent_react_step",
+            side_effect=mock_react_step,
+        ), patch(
+            "app.agent.orchestrator.generate_preview_summary",
+            new=_boom,
+        ):
+            async for chunk in stream_agent_events(
+                state, preview_lifecycle=True, execution_tables=tables
+            ):
+                chunks.append(chunk)
+
+        events = _parse_sse_events(chunks)
+        names = [n for n, _ in events]
+        assert names[-1] == "plan_done"
+        assert "preview_summary_ready" not in names
 
     asyncio.run(run())
 
@@ -222,7 +331,10 @@ def test_stream_agent_events_calls_pa_decision_step() -> None:
         with patch(
             "app.agent.orchestrator.pa_decision_step",
             side_effect=mock_pa,
-        ) as m_pa:
+        ) as m_pa, patch(
+            "app.agent.orchestrator.generate_preview_summary",
+            new=AsyncMock(return_value=None),
+        ):
             async for chunk in stream_agent_events(
                 state,
                 preview_lifecycle=True,

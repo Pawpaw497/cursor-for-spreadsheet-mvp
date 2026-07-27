@@ -592,6 +592,12 @@ export type AgentProjectPlanResult =
       previewHistory: PreviewRecord[];
       state: Record<string, unknown>;
       warnings?: string[];
+      /**
+       * AI 生成的 Diff 自然语言摘要；异步生成，首包恒为 null/undefined
+       * （见 .cursor/plans/agent-evolution-p1-v2-core.plan.md，p1-preview-summary-wire）。
+       * 渲染时需搭配免责声明，见 previewSummaryDisclaimer()。
+       */
+      summary?: string | null;
     }
   | {
       kind: "committed";
@@ -795,7 +801,8 @@ export async function requestAgentProjectPlan(
       preview: parseAgentPreviewRecord(previewRaw),
       previewHistory: histRaw.map((r) => parseAgentPreviewRecord(r)),
       state: (data.state as Record<string, unknown>) ?? {},
-      warnings: warningsRaw?.length ? warningsRaw : undefined
+      warnings: warningsRaw?.length ? warningsRaw : undefined,
+      summary: (data.summary as string | null | undefined) ?? null
     };
   }
   if (kind === "committed") {

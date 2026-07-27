@@ -253,4 +253,15 @@ CASES: list[EvalCase] = [
         target_tables=("销售订单", "产品信息"),
         ambiguous_target=True,
     ),
+    # 语义模糊（p1-clarify-dual-track）：两表都点名、无缺表/跨表列名冲突——post-plan
+    # 规则轨（clarification.py）不会触发；但 join 键未指明，只能靠 pre-llm_decide 的
+    # LLM 软扫描（clarify_scan.py）识别。双轨互斥/超时等确定性行为由
+    # test_clarify_scan.py 守卫，本用例只做宽松的“不 silent 出错”质量信号。
+    EvalCase(
+        id="ambiguous_join_key_semantic_clarify",
+        title="模糊 join 键：两表都点名但关联字段未指明，属语义歧义而非缺表",
+        prompt="把'销售订单'和'产品信息'关联起来，加上产品类别这一列。",
+        target_tables=("销售订单", "产品信息"),
+        ambiguous_target=True,
+    ),
 ]

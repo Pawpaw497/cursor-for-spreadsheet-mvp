@@ -232,6 +232,7 @@ async def agent(req: AgentProjectPlanRequest):
                         "You may confirm this preview, abort, or rephrase your request.",
                     ],
                     "state": {"revision_count": req.revisionCount},
+                    "summary": None,
                 }
             raise HTTPException(
                 status_code=429,
@@ -319,6 +320,8 @@ def _map_agent_result_to_response(
                 preview_record_to_wire_dict(h) for h in final_state.preview_history
             ],
             "state": final_state.to_dict(),
+            # p1-preview-summary-wire 方案 A：首包恒为 None，见 PreviewReadyPayload docstring。
+            "summary": pra.payload.summary,
         }
         if pra.payload.warnings:
             resp["warnings"] = pra.payload.warnings
