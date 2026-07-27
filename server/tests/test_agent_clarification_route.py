@@ -88,6 +88,9 @@ def test_gate_fires_when_plan_omits_table(client: TestClient) -> None:
     with patch(
         "app.agent.pa_decision._run_pa_single_turn",
         new=AsyncMock(return_value=turn),
+    ), patch(
+        "app.agent.orchestrator.run_clarify_scan",
+        new=AsyncMock(return_value=None),
     ):
         resp = client.post("/api/agent", json=_two_table_agent_body())
 

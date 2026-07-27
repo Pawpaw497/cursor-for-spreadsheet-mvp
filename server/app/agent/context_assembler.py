@@ -126,13 +126,24 @@ def _render_intent_line(t: TableProfile) -> str | None:
     return "  " + " | ".join(parts)
 
 
-def build_data_context_text(dc: DataContext | None) -> str:
-    """DataContext → 紧凑 prompt 文本；空则返回空串（调用方据此跳过注入）。"""
+def build_data_context_text(
+    dc: DataContext | None, selected_table_names: list[str] | None = None
+) -> str:
+    """DataContext → 紧凑 prompt 文本；空则返回空串（调用方据此跳过注入）。
+
+    @param selected_table_names: 非 None 时启用 pre_plan 表级裁剪渲染——命中的表
+        全量渲染列详情，未命中的表折叠为单行（仅名称/行列数），不裁列（p1-pre-plan-guards）。
+        None（默认）保持既有全量渲染行为，兼容 context_analyzer/intent_analyzer 现有调用。
+    """
     if dc is None or not dc.tables:
         return ""
+    selected = set(selected_table_names) if selected_table_names is not None else None
     blocks: list[str] = []
     for t in dc.tables:
         header = f'Table "{t.table_name}" ({t.total_row_count} rows, {t.col_count} columns)'
+        if selected is not None and t.table_name not in selected:
+            blocks.append(header + " — folded, not selected by pre_plan.")
+            continue
         if t.profile_sampled:
             header += " (distinct/top values sampled)"
         lines = [header + ":"]
@@ -144,17 +155,22 @@ def build_data_context_text(dc: DataContext | None) -> str:
     return DATA_PROFILE_PREFIX + "\n\n".join(blocks)
 
 
-def refresh_data_profile_message(state: AgentState) -> AgentState:
+def refresh_data_profile_message(
+    state: AgentState, selected_table_names: list[str] | None = None
+) -> AgentState:
     """用当前 ``state.data_context`` 重新渲染并原地替换 transcript 里的 Data profile 消息。
 
     intent_analyzer 在 context_analyzer 之后运行，只改 ``data_context`` 不够——
     ``context_analyzer`` 已经把渲染文本注入 ``messages``，不刷新的话 llm_decide
     读到的还是回填前的旧文本。找不到旧 profile 消息（context_analyzer 判定跳过
     注入的场景，如 transcript 无 schema 消息）时原样返回，不新增注入。
+
+    @param selected_table_names: 见 ``build_data_context_text``；pre_plan 裁剪/还原时传入，
+        intent_analyzer 的既有调用不传，保持全量渲染。
     """
     if state.data_context is None:
         return state
-    text = build_data_context_text(state.data_context)
+    text = build_data_context_text(state.data_context, selected_table_names)
     if not text:
         return state
     messages = list(state.messages)

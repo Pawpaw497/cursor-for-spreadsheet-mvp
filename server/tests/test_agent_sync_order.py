@@ -146,6 +146,9 @@ def test_sync_and_sse_preview_ready_payload_parity() -> None:
         with patch(
             "app.agent.orchestrator.agent_react_step",
             side_effect=mock_react_step,
+        ), patch(
+            "app.agent.orchestrator.generate_preview_summary",
+            new=AsyncMock(return_value=None),
         ):
             async for chunk in stream_agent_events(
                 state,
@@ -176,9 +179,12 @@ def test_sync_and_sse_preview_ready_payload_parity() -> None:
         assert isinstance(action, PreviewReadyAction)
         sync_resp = _map_agent_result_to_response(final_agent, action)
         assert sync_resp["kind"] == "preview_ready"
-        for key in ("plan", "preview", "previewHistory"):
+        for key in ("plan", "preview", "previewHistory", "summary"):
             assert key in sync_resp
             assert key in sse_preview
+        # p1-preview-summary-wire 方案 A：首包恒为 None，两条路径须一致。
+        assert sync_resp["summary"] is None
+        assert sse_preview["summary"] is None
         assert len(sync_resp["previewHistory"]) == len(sse_preview["previewHistory"]) == 1
         assert sync_resp["previewHistory"][0]["status"] == sse_preview["previewHistory"][0]["status"]
         assert sync_resp["preview"]["status"] == sse_preview["preview"]["status"] == "pending"

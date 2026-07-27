@@ -539,6 +539,57 @@ textarea {
   border: 1px solid #ccc;
 }
 
+.custom-model-panel {
+  flex: 1 1 100%;
+  font-size: 12px;
+  color: #555;
+}
+
+.custom-model-panel > summary {
+  cursor: pointer;
+  padding: 2px 0;
+}
+
+.custom-model-form {
+  display: flex;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.custom-model-input {
+  flex: 1 1 0;
+  min-width: 0;
+  padding: 5px 8px;
+  font-size: 12px;
+  border-radius: 4px;
+  border: 1px solid #ccc;
+}
+
+.custom-model-error {
+  margin-top: 4px;
+  color: #c0392b;
+}
+
+.custom-model-list {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 0;
+}
+
+.custom-model-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 2px 0;
+}
+
+.custom-model-list li span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .schema-section {
   display: flex;
   flex-direction: column;

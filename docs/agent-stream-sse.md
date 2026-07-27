@@ -33,7 +33,7 @@ data: <json object>
 |-------|----------------|-------------------|
 | `tool_call` | PA chose a spreadsheet tool | `tool`, `args`, `state` |
 | `tool_result` | Tool finished | `tool`, `state` |
-| `preview_ready` | `previewLifecycle: true` and dry-run succeeded (or degraded at revision cap) | `plan`, `preview`, `previewHistory`, optional `warnings`, `state` |
+| `preview_ready` | `previewLifecycle: true` and dry-run succeeded (or degraded at revision cap) | `plan`, `preview`, `previewHistory`, `summary` (null until p1-preview-summary-async lands), optional `warnings`, `state` |
 | `plan_done` | Terminal plan output | `plan`, `state` |
 | `clarification` | Terminal `ask_clarification` | `question`, `options`, `context`, `state` |
 | `finish` | Terminal `finish` or orchestrator error | `reason`, `state` |
@@ -89,7 +89,9 @@ sequenceDiagram
 | `plan_done` | `plan` | No server preview record |
 | `finish` | — | Throws `agent-stream finish: <reason>` |
 
-Sync parity for `preview_ready` payloads (`plan`, `preview`, `previewHistory`, `warnings`) is asserted in `test_sync_and_sse_preview_ready_payload_parity`.
+Sync parity for `preview_ready` payloads (`plan`, `preview`, `previewHistory`, `warnings`, `summary`) is asserted in `test_sync_and_sse_preview_ready_payload_parity`.
+
+**`summary` wire contract (p1-preview-summary-wire, plan A):** `preview_ready`'s first packet always carries `summary: null` on both sync and SSE — the natural-language Diff summary is generated asynchronously and must not block `preview_ready` itself (p1-preview-summary-async). Once ready, it will be pushed via a separate SSE event `preview_summary_ready` (payload: `{"previewId": string, "summary": string}`); the sync `/api/agent` client does not await generation and accepts a summary-less first packet. Any UI that renders `summary` must pair it with a disclaimer (AI-generated, may be inaccurate).
 
 ## `finish` reasons (non-exhaustive)
 

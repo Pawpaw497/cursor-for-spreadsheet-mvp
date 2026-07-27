@@ -40,7 +40,8 @@ export function mapAgentStreamEventsToResult(
       preview: parseAgentPreviewRecord(d.preview as Record<string, unknown>),
       previewHistory: histRaw.map((r) => parseAgentPreviewRecord(r)),
       state: (d.state as Record<string, unknown>) ?? {},
-      warnings: warningsRaw?.length ? warningsRaw : undefined
+      warnings: warningsRaw?.length ? warningsRaw : undefined,
+      summary: (d.summary as string | null | undefined) ?? null
     };
   }
 

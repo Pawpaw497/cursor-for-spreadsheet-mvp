@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import re
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from app.agent.actions import OutputPlanAction, PreviewReadyAction, PreviewReadyPayload
 from app.agent.orchestrator import stream_agent_events
@@ -189,6 +189,9 @@ def test_stream_agent_events_preview_ready_wire_aliases() -> None:
         with patch(
             "app.agent.orchestrator.agent_react_step",
             new=mock_react_step,
+        ), patch(
+            "app.agent.orchestrator.generate_preview_summary",
+            new=AsyncMock(return_value=None),
         ):
             async for chunk in stream_agent_events(
                 state, preview_lifecycle=True, execution_tables=tables
