@@ -18,13 +18,13 @@ Canonical reference for **cursor-for-spreadsheet**, a presentable personal proje
 
 | Document | Audience | Summary |
 |----------|----------|---------|
+| [product-design-philosophy.md](./product-design-philosophy.md) | Anyone new to the project | Why the project is shaped this way: Plan-as-contract, clarify-before-act, determinism guarding the LLM, bandwidth economics, non-goals |
 | [architecture.md](./architecture.md) | Full-stack | Components, API surface, plan execution paths, observability |
 | [plan-step-types-reference.md](./plan-step-types-reference.md) | LLM / backend / frontend | Plan JSON contract: every `action`, fields, and semantics |
 | [agent-preview-lifecycle.md](./agent-preview-lifecycle.md) | Agent / API | Server-side preview, confirm / abort / revise, fingerprints |
 | [agent-stream-sse.md](./agent-stream-sse.md) | Agent / API / frontend | `/api/agent-stream` SSE events, ordering, sync parity, client mapping |
 | [agent-memory.md](./agent-memory.md) | Agent / frontend / backend | Workspace memory schema, prompt injection, compaction, optional server session store |
 | [client-storage.md](./client-storage.md) | Frontend | Browser `localStorage` keys, workspace memory, session sync, privacy |
-| [agent-improvements.md](./agent-improvements.md) | Agent roadmap | Historical upgrade notes; see banner for what is already shipped |
 | [evaluation.md](./evaluation.md) | Agent quality | Eval suite (`server/evaluation/`): plan/execution/behavior correctness, gates roadmap changes |
 | [trouble-shoot.md](./trouble-shoot.md) | Developers | Known issues and common pitfalls |
 | [getting-started.md](./getting-started.md) | Setup | Full Quick Start beyond root README |

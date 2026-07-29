@@ -53,10 +53,10 @@ OPENROUTER_API_KEY=sk-or-...
 OPENROUTER_MODEL=openrouter/auto
 ```
 
-3. Optional: override `OPENROUTER_MODELS` and `OPENROUTER_LABELS` (comma-separated, equal length) for the UI dropdown. Defaults are in `.env.example`.
+3. Optional: override `OPENROUTER_MODELS` and `OPENROUTER_LABELS` (comma-separated, equal length) for the UI dropdown. `OPENROUTER_MODELS` entries must be OpenRouter model ids (`vendor/model`, e.g. `anthropic/claude-3.5-sonnet`); labels are the display names shown on OpenRouter. Defaults are in `.env.example`.
 4. Start backend and frontend as in Path A.
 
-**Cost tip:** in the UI model dropdown, prefer entries tagged **经济** (economy tier) for Plan/Agent debugging; use **标准** (standard tier) when comparing quality.
+**Cost tip:** for repeated Plan/Agent debugging pick a cheap model (Gemini Flash Lite, GPT-4o-mini); switch to a stronger one when comparing output quality.
 
 **Optional cloud E2E** (real API calls, needs key):
 
@@ -104,7 +104,7 @@ Import Excel/CSV via toolbar; imports time out after ~20 s with a visible messag
 | Topic | Doc |
 |-------|-----|
 | Features | [features.md](./features.md) |
-| Agent clarification | [agent-improvements.md](./agent-improvements.md), `server/app/agent/clarification.py` |
+| Agent clarification | [agent-memory.md § Clarification and agent transcript](./agent-memory.md#clarification-and-agent-transcript), `server/app/agent/clarification.py` |
 | Agent preview lifecycle | [agent-preview-lifecycle.md](./agent-preview-lifecycle.md) |
 | Browser storage | [client-storage.md](./client-storage.md) |
 | Agent memory | [agent-memory.md](./agent-memory.md) |
