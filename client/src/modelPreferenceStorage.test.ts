@@ -11,9 +11,9 @@ import {
 const store = new Map<string, string>();
 
 const sampleConfig: ConfigResponse = {
-  openRouterModel: "openrouter/auto",
+  openRouterModel: "deepseek/deepseek-v4-pro",
   openRouterModels: [
-    { id: "openrouter/auto", label: "Auto" },
+    { id: "deepseek/deepseek-v4-pro", label: "DeepSeek: DeepSeek V4 Pro" },
     { id: "openai/gpt-4o-mini", label: "GPT-4o mini" },
   ],
   ollamaModel: "qwen2.5:7b",
@@ -62,7 +62,7 @@ describe("modelPreferenceStorage", () => {
       JSON.stringify({
         version: 1,
         modelSource: "edge",
-        cloudModelId: "openrouter/auto",
+        cloudModelId: "deepseek/deepseek-v4-pro",
         localModelId: "qwen2.5:7b",
       })
     );
@@ -96,7 +96,7 @@ describe("modelPreferenceStorage", () => {
     );
     expect(resolved).toEqual({
       modelSource: "cloud",
-      cloudModelId: "openrouter/auto",
+      cloudModelId: "deepseek/deepseek-v4-pro",
       localModelId: "qwen2.5:7b",
     });
   });
@@ -104,7 +104,7 @@ describe("modelPreferenceStorage", () => {
   it("defaults modelSource to cloud when saved is null", () => {
     const resolved = resolveModelPreference(null, sampleConfig);
     expect(resolved.modelSource).toBe("cloud");
-    expect(resolved.cloudModelId).toBe("openrouter/auto");
+    expect(resolved.cloudModelId).toBe("deepseek/deepseek-v4-pro");
     expect(resolved.localModelId).toBe("qwen2.5:7b");
   });
 });

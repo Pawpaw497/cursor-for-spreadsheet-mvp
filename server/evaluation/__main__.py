@@ -12,6 +12,9 @@ import sys
 from .cases import CASES
 from .runner import print_report, run_all
 
+# 与 server/app/config.py OPENROUTER_MODEL 默认一致；不传 --cloud-model-id 时用此 id。
+DEFAULT_CLOUD_MODEL_ID = "deepseek/deepseek-v4-pro"
+
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -21,10 +24,14 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--model-source",
         choices=["local", "cloud"],
-        default="local",
-        help="Same as the UI toggle; local uses Ollama (default, matches README quick start).",
+        default="cloud",
+        help="Cloud (default) uses OpenRouter with the product default model.",
     )
-    parser.add_argument("--cloud-model-id", default=None, help="OpenRouter model id (cloud only).")
+    parser.add_argument(
+        "--cloud-model-id",
+        default=DEFAULT_CLOUD_MODEL_ID,
+        help=f"OpenRouter model id (cloud only). Default: {DEFAULT_CLOUD_MODEL_ID}",
+    )
     parser.add_argument("--local-model-id", default=None, help="Ollama model id (default: server config).")
     parser.add_argument(
         "--case",

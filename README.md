@@ -24,39 +24,36 @@ A **presentable, evolvable personal project** for applying the latest **agent te
 - **Cmd+K workflow**: Natural language + table schema / sample rows → LLM generates JSON plan → in-grid Diff preview → Apply / undo.
 - **Single-table** (`/api/plan`) and **multi-table projects** (`/api/plan-project`): column/row transforms, join, lookup, aggregation, etc.; shared Plan contract across frontend and backend.
 - **Agent mode**: `/api/agent`, `/api/agent-stream` — multi-turn tool calls; per-table semantic profiling (topic/description/granularity); clarification before plan generation when ambiguous.
-- **Stack**: React 18 + Vite + AG Grid; FastAPI + uv; **LangGraph · Pydantic AI**; OpenRouter / local Ollama dual backends; SQLite request and LLM call audit.
+- **Stack**: React 18 + Vite + AG Grid; FastAPI + uv; **LangGraph · Pydantic AI**; OpenRouter (`deepseek/deepseek-v4-pro`); SQLite request and LLM call audit.
 - **Documentation**: feature deep dive [`docs/features.md`](docs/features.md); technical index [`docs/README.md`](docs/README.md); Chinese README [`README.cn.md`](README.cn.md).
+
+## Single-model phase (current)
+
+The product currently targets **one** cloud model: **`deepseek/deepseek-v4-pro`** via OpenRouter. The UI does not expose model switching. Engineering effort does **not** cover weak-model fallbacks, OpenRouter auto/free routing, user-defined model IDs, or local Ollama selection unless multi-model support becomes an explicit product decision.
 
 ## Quick start
 
 **Full setup** (OpenRouter, full `.env` table, first Cmd+K): [`docs/getting-started.md`](docs/getting-started.md)
 
-### Recommended: Ollama (no API key)
+### Recommended: OpenRouter + DeepSeek V4 Pro
 
-1. **Prerequisites**: Python 3.10+, [uv](https://docs.astral.sh/uv/), Node.js 18+, [Ollama](https://ollama.ai) installed.
+1. **Prerequisites**: Python 3.10+, [uv](https://docs.astral.sh/uv/), Node.js 18+, an [OpenRouter](https://openrouter.ai) API key.
 
 ```bash
 git clone https://github.com/Pawpaw497/cursor-for-spreadsheet.git
 cd cursor-for-spreadsheet
 ```
 
-2. **Local model** (keep `ollama serve` running in a terminal):
-
-```bash
-ollama serve
-ollama pull qwen2.5:7b
-```
-
-3. **Backend** (use `server/.venv` from `uv sync` only — not a root-level venv):
+2. **Backend** (use `server/.venv` from `uv sync` only — not a root-level venv):
 
 ```bash
 cd server
-cp .env.example .env   # OPENROUTER_API_KEY can stay empty; AUTO_START_OLLAMA=1 may auto-start Ollama
+cp .env.example .env   # set OPENROUTER_API_KEY
 uv sync
 uv run uvicorn main:app --reload --port 8787
 ```
 
-4. **Frontend** (new terminal):
+3. **Frontend** (new terminal):
 
 ```bash
 cd client
@@ -64,11 +61,11 @@ npm install
 npm run dev
 ```
 
-5. Open **http://localhost:5173**, load a sample table, then **Cmd+K** → select **Local** / `qwen2.5:7b` → enter a prompt (e.g. `Add amount column = quantity * unit price on sales orders`) → **Generate Plan** → **Apply**. Sample prompts: [`test-data/test-prompts.md`](test-data/test-prompts.md).
+4. Open **http://localhost:5173**, load a sample table, then **Cmd+K** → enter a prompt (e.g. `Add amount column = quantity * unit price on sales orders`) → **Generate Plan** → **Apply**. Sample prompts: [`test-data/test-prompts.md`](test-data/test-prompts.md).
 
-### Optional: OpenRouter (cloud)
+### Legacy: Ollama (developer-only)
 
-Set `OPENROUTER_API_KEY` in `server/.env`; switch to **Cloud** and pick a model in the UI. See [`docs/getting-started.md`](docs/getting-started.md) Path B.
+The backend still supports local Ollama (`modelSource: local`), but the UI no longer exposes model selection. See [`docs/getting-started.md`](docs/getting-started.md) Path A if you need a keyless local path.
 
 ### One-command start (optional)
 

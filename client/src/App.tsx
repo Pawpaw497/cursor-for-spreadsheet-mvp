@@ -83,6 +83,11 @@ import { loadWorkspaceRules, saveWorkspaceRules } from "./workspaceRulesStorage"
 
 const initialModelPreference = loadModelPreference();
 
+/** Single-model product phase — aligned with server ``OPENROUTER_MODEL`` default. */
+const PRODUCT_CLOUD_MODEL_ID = "deepseek/deepseek-v4-pro";
+/** Model switch UI hidden until multi-model is an explicit product decision. */
+const SHOW_MODEL_SWITCH = false;
+
 type ConversationEntry = {
   id: number;
   prompt: string;
@@ -826,9 +831,10 @@ export default function App() {
           loadModelPreference(),
           mergeCustomModels(c, loadCustomModels())
         );
-        setModelSource(resolved.modelSource);
-        setCloudModelId(resolved.cloudModelId);
-        setLocalModelId(resolved.localModelId);
+        const productModelId = c.openRouterModel || PRODUCT_CLOUD_MODEL_ID;
+        setModelSource("cloud");
+        setCloudModelId(productModelId);
+        setLocalModelId(resolved.localModelId || c.ollamaModel || "");
       })
       .catch(() => setServerConfig(null));
   }, []);
@@ -2209,6 +2215,7 @@ export default function App() {
                   ))}
                 </div>
                 <div className="ai-prompt-dock">
+                  {SHOW_MODEL_SWITCH && (
                   <div className="model-switch">
                     <div className="model-source-row">
                       <label>
@@ -2301,6 +2308,7 @@ export default function App() {
                       )}
                     </details>
                   </div>
+                  )}
                   <details className="workspace-rules-panel small">
                     <summary>Workspace rules (optional)</summary>
                     <textarea
