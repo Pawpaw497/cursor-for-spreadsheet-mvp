@@ -14,10 +14,9 @@ import {
 const store = new Map<string, string>();
 
 const sampleConfig: ConfigResponse = {
-  openRouterModel: "openrouter/auto",
+  openRouterModel: "deepseek/deepseek-v4-pro",
   openRouterModels: [
-    { id: "openrouter/auto", label: "Auto" },
-    { id: "openai/gpt-4o-mini", label: "GPT-4o mini" },
+    { id: "deepseek/deepseek-v4-pro", label: "DeepSeek: DeepSeek V4 Pro" },
   ],
   ollamaModel: "qwen2.5:7b",
   ollamaModels: [{ id: "qwen2.5:7b", label: "qwen2.5:7b" }],
@@ -139,8 +138,7 @@ describe("mergeCustomModels", () => {
       local: [{ id: "llama3", label: "llama3" }],
     });
     expect(merged.openRouterModels.map((m) => m.id)).toEqual([
-      "openrouter/auto",
-      "openai/gpt-4o-mini",
+      "deepseek/deepseek-v4-pro",
       "anthropic/claude-opus-4",
     ]);
     expect(merged.ollamaModels.map((m) => m.id)).toEqual(["qwen2.5:7b", "llama3"]);
@@ -148,7 +146,7 @@ describe("mergeCustomModels", () => {
 
   it("lets a server model win over a custom entry with the same id", () => {
     const merged = mergeCustomModels(sampleConfig, {
-      cloud: [{ id: "openrouter/auto", label: "Mine" }],
+      cloud: [{ id: "deepseek/deepseek-v4-pro", label: "Mine" }],
       local: [],
     });
     expect(merged.openRouterModels).toEqual(sampleConfig.openRouterModels);

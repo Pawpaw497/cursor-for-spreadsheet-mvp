@@ -24,39 +24,38 @@
 - **Cmd+K 工作流**：自然语言 + 表 schema / 样本行 → LLM 生成 JSON 计划 → 表格内 Diff 预览 → Apply / 撤销。
 - **单表**（`/api/plan`）与**多表项目**（`/api/plan-project`）：列/行变换、join、lookup、聚合等；前后端共享 Plan 契约。
 - **Agent 模式**：`/api/agent`、`/api/agent-stream` — 多轮工具调用，附带表级语义画像（topic/description/granularity），歧义时可先澄清再出 Plan。
-- **技术栈**：React 18 + Vite + AG Grid；FastAPI + uv；**LangGraph · Pydantic AI**；OpenRouter / 本地 Ollama 双后端；SQLite 请求与 LLM 调用审计。
+- **技术栈**：React 18 + Vite + AG Grid；FastAPI + uv；**LangGraph · Pydantic AI**；OpenRouter（`deepseek/deepseek-v4-pro`）+ 本地 Ollama；SQLite 请求与 LLM 调用审计。
 - **文档**：功能详解见 [`docs/features.md`](docs/features.md)；技术索引 [`docs/README.md`](docs/README.md)；英文主 README [`README.md`](README.md)。
+
+## 单一模型阶段（当前）
+
+当前开发阶段，云端路径固定使用**单一模型** —— **`deepseek/deepseek-v4-pro`**（OpenRouter）—— 避免在开发早期就为弱模型兜底、OpenRouter auto/free 路由、用户自定义模型 ID 等问题投入精力。UI 不提供云端模型切换。
+
+本地 Ollama 能力予以保留，这是设计的一部分，不是被废弃的路径：它服务于数据需保留在本机、对保密性有要求的场景。只是当前不作为开发重点，因此 UI 同样不提供本地模型选择——需要时走 API（`modelSource: "local"`），或见下文。
 
 ## 快速开始
 
 **完整步骤**（OpenRouter、`.env` 全表、首次 Cmd+K）：[`docs/getting-started.md`](docs/getting-started.md)
 
-### 推荐：Ollama（零 API Key）
+### 推荐：OpenRouter + DeepSeek V4 Pro
 
-1. **环境**：Python 3.10+、[uv](https://docs.astral.sh/uv/)、Node.js 18+、已安装 [Ollama](https://ollama.ai)。
+1. **环境**：Python 3.10+、[uv](https://docs.astral.sh/uv/)、Node.js 18+、[OpenRouter](https://openrouter.ai) API Key。
 
 ```bash
 git clone https://github.com/Pawpaw497/cursor-for-spreadsheet.git
 cd cursor-for-spreadsheet
 ```
 
-2. **本地模型**（保持 `ollama serve` 终端不关）：
-
-```bash
-ollama serve
-ollama pull qwen2.5:7b
-```
-
-3. **后端**（`server/.venv` 仅由 `uv sync` 创建，勿用仓库根目录其他 venv）：
+2. **后端**（`server/.venv` 仅由 `uv sync` 创建，勿用仓库根目录其他 venv）：
 
 ```bash
 cd server
-cp .env.example .env   # OPENROUTER_API_KEY 可留空；AUTO_START_OLLAMA=1 可尝试自动起 Ollama
+cp .env.example .env   # 填入 OPENROUTER_API_KEY
 uv sync
 uv run uvicorn main:app --reload --port 8787
 ```
 
-4. **前端**（新终端）：
+3. **前端**（新终端）：
 
 ```bash
 cd client
@@ -64,11 +63,11 @@ npm install
 npm run dev
 ```
 
-5. 打开 **http://localhost:5173**，加载示例表后 **Cmd+K** → 选 **本地** / `qwen2.5:7b` → 输入指令（如 `在销售订单表新增金额列 = 数量 * 单价`）→ **Generate Plan** → **Apply**。示例提示词见 [`test-data/test-prompts.md`](test-data/test-prompts.md)。
+4. 打开 **http://localhost:5173**，加载示例表后 **Cmd+K** → 输入指令（如 `在销售订单表新增金额列 = 数量 * 单价`）→ **Generate Plan** → **Apply**。示例提示词见 [`test-data/test-prompts.md`](test-data/test-prompts.md)。
 
-### 可选：OpenRouter 云端
+### 本地：Ollama（保密 / 离线场景）
 
-在 `server/.env` 填入 `OPENROUTER_API_KEY`；前端切换「云端」与模型下拉。详见 [`docs/getting-started.md`](docs/getting-started.md) Path B。
+后端仍完整支持本地 Ollama（`modelSource: local`），服务于数据需保留在本机的场景；云端阶段固定单一模型期间，UI 同样不提供本地模型选择。需要零 API Key 本地路径时见 [`docs/getting-started.md`](docs/getting-started.md) Path B。
 
 ### 一键启动（可选）
 

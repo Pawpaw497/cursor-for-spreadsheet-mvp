@@ -83,6 +83,9 @@ import { loadWorkspaceRules, saveWorkspaceRules } from "./workspaceRulesStorage"
 
 const initialModelPreference = loadModelPreference();
 
+/** Model switch UI hidden until multi-model is an explicit product decision. */
+const SHOW_MODEL_SWITCH = false;
+
 type ConversationEntry = {
   id: number;
   prompt: string;
@@ -828,7 +831,7 @@ export default function App() {
         );
         setModelSource(resolved.modelSource);
         setCloudModelId(resolved.cloudModelId);
-        setLocalModelId(resolved.localModelId);
+        setLocalModelId(resolved.localModelId || c.ollamaModel || "");
       })
       .catch(() => setServerConfig(null));
   }, []);
@@ -2209,6 +2212,7 @@ export default function App() {
                   ))}
                 </div>
                 <div className="ai-prompt-dock">
+                  {SHOW_MODEL_SWITCH && (
                   <div className="model-switch">
                     <div className="model-source-row">
                       <label>
@@ -2301,6 +2305,7 @@ export default function App() {
                       )}
                     </details>
                   </div>
+                  )}
                   <details className="workspace-rules-panel small">
                     <summary>Workspace rules (optional)</summary>
                     <textarea

@@ -19,7 +19,7 @@
 
 ## 运行方式
 
-默认走云端 OpenRouter，默认模型 `deepseek/deepseek-v4-flash`（需要配置 `OPENROUTER_API_KEY`）：
+默认走云端 OpenRouter，默认模型 `deepseek/deepseek-v4-pro`（需要配置 `OPENROUTER_API_KEY`）：
 
 ```bash
 cd server

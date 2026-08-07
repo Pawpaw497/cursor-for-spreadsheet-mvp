@@ -9,8 +9,13 @@ import argparse
 import json
 import sys
 
+from app.config import PRODUCT_DEFAULT_MODEL
+
 from .cases import CASES
 from .runner import print_report, run_all
+
+# 不传 --cloud-model-id 时用此 id；单一来源见 app.config.PRODUCT_DEFAULT_MODEL。
+DEFAULT_CLOUD_MODEL_ID = PRODUCT_DEFAULT_MODEL
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -21,10 +26,14 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--model-source",
         choices=["local", "cloud"],
-        default="local",
-        help="Same as the UI toggle; local uses Ollama (default, matches README quick start).",
+        default="cloud",
+        help="Cloud (default) uses OpenRouter with the product default model.",
     )
-    parser.add_argument("--cloud-model-id", default=None, help="OpenRouter model id (cloud only).")
+    parser.add_argument(
+        "--cloud-model-id",
+        default=DEFAULT_CLOUD_MODEL_ID,
+        help=f"OpenRouter model id (cloud only). Default: {DEFAULT_CLOUD_MODEL_ID}",
+    )
     parser.add_argument("--local-model-id", default=None, help="Ollama model id (default: server config).")
     parser.add_argument(
         "--case",

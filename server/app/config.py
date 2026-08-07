@@ -6,6 +6,10 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# Single-model product phase: the one model the product guarantees and optimizes for.
+# Referenced by env defaults below, /api/config, and the eval CLI so there is one source of truth.
+PRODUCT_DEFAULT_MODEL = "deepseek/deepseek-v4-pro"
+
 
 def _parse_model_options(ids_env: str, labels_env: str, default_id: str) -> list[tuple[str, str]]:
     """解析逗号分隔的模型 id 与 label，返回 [(id, label), ...]。"""
@@ -21,21 +25,14 @@ class Settings:
 
     # LLM - Cloud (OpenRouter)
     OPENROUTER_API_KEY: str = os.getenv("OPENROUTER_API_KEY", "")
-    OPENROUTER_MODEL: str = os.getenv("OPENROUTER_MODEL", "openrouter/auto")
+    OPENROUTER_MODEL: str = os.getenv("OPENROUTER_MODEL", PRODUCT_DEFAULT_MODEL)
     OPENROUTER_MODELS: str = os.getenv(
         "OPENROUTER_MODELS",
-        (
-            "openrouter/auto,"
-            "google/gemini-2.5-flash-lite,"
-            "openai/gpt-4o-mini,"
-            "deepseek/deepseek-chat,"
-            "openrouter/anthropic/claude-3.5-sonnet,"
-            "openrouter/google/gemini-2.0-flash-001"
-        ),
+        PRODUCT_DEFAULT_MODEL,
     )
     OPENROUTER_LABELS: str = os.getenv(
         "OPENROUTER_LABELS",
-        "Auto,Gemini Lite（经济）,GPT-4o mini（经济）,DeepSeek（经济）,Claude 3.5（标准）,Gemini 2.0 Flash（标准）",
+        "DeepSeek: DeepSeek V4 Pro",
     )
 
     # LLM - Local (Ollama)
@@ -91,7 +88,7 @@ class Settings:
     @property
     def openrouter_model_list(self) -> list[tuple[str, str]]:
         return _parse_model_options(
-            self.OPENROUTER_MODELS, self.OPENROUTER_LABELS, "openrouter/auto"
+            self.OPENROUTER_MODELS, self.OPENROUTER_LABELS, PRODUCT_DEFAULT_MODEL
         )
 
     @property
