@@ -9,11 +9,13 @@ import argparse
 import json
 import sys
 
+from app.config import PRODUCT_DEFAULT_MODEL
+
 from .cases import CASES
 from .runner import print_report, run_all
 
-# 与 server/app/config.py OPENROUTER_MODEL 默认一致；不传 --cloud-model-id 时用此 id。
-DEFAULT_CLOUD_MODEL_ID = "deepseek/deepseek-v4-pro"
+# 不传 --cloud-model-id 时用此 id；单一来源见 app.config.PRODUCT_DEFAULT_MODEL。
+DEFAULT_CLOUD_MODEL_ID = PRODUCT_DEFAULT_MODEL
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:

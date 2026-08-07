@@ -83,8 +83,6 @@ import { loadWorkspaceRules, saveWorkspaceRules } from "./workspaceRulesStorage"
 
 const initialModelPreference = loadModelPreference();
 
-/** Single-model product phase — aligned with server ``OPENROUTER_MODEL`` default. */
-const PRODUCT_CLOUD_MODEL_ID = "deepseek/deepseek-v4-pro";
 /** Model switch UI hidden until multi-model is an explicit product decision. */
 const SHOW_MODEL_SWITCH = false;
 
@@ -831,9 +829,8 @@ export default function App() {
           loadModelPreference(),
           mergeCustomModels(c, loadCustomModels())
         );
-        const productModelId = c.openRouterModel || PRODUCT_CLOUD_MODEL_ID;
         setModelSource("cloud");
-        setCloudModelId(productModelId);
+        setCloudModelId(c.openRouterModel);
         setLocalModelId(resolved.localModelId || c.ollamaModel || "");
       })
       .catch(() => setServerConfig(null));

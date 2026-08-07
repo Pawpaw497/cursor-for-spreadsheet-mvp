@@ -11,7 +11,7 @@ from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import Response, StreamingResponse
 
-from app.config import SERVER_BOOT_ID, settings
+from app.config import PRODUCT_DEFAULT_MODEL, SERVER_BOOT_ID, settings
 from app.services import audit_db
 from app.services.audit_log import (
     extract_audit_context,
@@ -104,6 +104,12 @@ async def lifespan(app: FastAPI):
         settings.AUTO_START_OLLAMA,
         settings.OLLAMA_BASE,
     )
+    if settings.OPENROUTER_MODEL != PRODUCT_DEFAULT_MODEL:
+        logger.warning(
+            "running non-default model: OPENROUTER_MODEL=%s (product default=%s)",
+            settings.OPENROUTER_MODEL,
+            PRODUCT_DEFAULT_MODEL,
+        )
     _start_ollama()
     llm_http_client = create_llm_http_client()
     set_shared_llm_http_client(llm_http_client)

@@ -6,6 +6,10 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# Single-model product phase: the one model the product guarantees and optimizes for.
+# Referenced by env defaults below, /api/config, and the eval CLI so there is one source of truth.
+PRODUCT_DEFAULT_MODEL = "deepseek/deepseek-v4-pro"
+
 
 def _parse_model_options(ids_env: str, labels_env: str, default_id: str) -> list[tuple[str, str]]:
     """解析逗号分隔的模型 id 与 label，返回 [(id, label), ...]。"""
@@ -21,10 +25,10 @@ class Settings:
 
     # LLM - Cloud (OpenRouter)
     OPENROUTER_API_KEY: str = os.getenv("OPENROUTER_API_KEY", "")
-    OPENROUTER_MODEL: str = os.getenv("OPENROUTER_MODEL", "deepseek/deepseek-v4-pro")
+    OPENROUTER_MODEL: str = os.getenv("OPENROUTER_MODEL", PRODUCT_DEFAULT_MODEL)
     OPENROUTER_MODELS: str = os.getenv(
         "OPENROUTER_MODELS",
-        "deepseek/deepseek-v4-pro",
+        PRODUCT_DEFAULT_MODEL,
     )
     OPENROUTER_LABELS: str = os.getenv(
         "OPENROUTER_LABELS",
@@ -84,7 +88,7 @@ class Settings:
     @property
     def openrouter_model_list(self) -> list[tuple[str, str]]:
         return _parse_model_options(
-            self.OPENROUTER_MODELS, self.OPENROUTER_LABELS, "deepseek/deepseek-v4-pro"
+            self.OPENROUTER_MODELS, self.OPENROUTER_LABELS, PRODUCT_DEFAULT_MODEL
         )
 
     @property
