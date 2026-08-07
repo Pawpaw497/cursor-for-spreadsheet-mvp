@@ -197,11 +197,12 @@ def run_case(
 
 def run_all(
     *,
-    model_source: str = "local",
+    model_source: str = "cloud",
     cloud_model_id: Optional[str] = None,
     local_model_id: Optional[str] = None,
     case_ids: Optional[list[str]] = None,
 ) -> list[EvalCaseResult]:
+    """Run eval cases. Defaults match ``python -m evaluation`` CLI (cloud + server model)."""
     cases = [c for c in CASES if not case_ids or c.id in case_ids]
     client = TestClient(app)
     all_tables = load_sample_tables(client)
