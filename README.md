@@ -24,12 +24,14 @@ A **presentable, evolvable personal project** for applying the latest **agent te
 - **Cmd+K workflow**: Natural language + table schema / sample rows → LLM generates JSON plan → in-grid Diff preview → Apply / undo.
 - **Single-table** (`/api/plan`) and **multi-table projects** (`/api/plan-project`): column/row transforms, join, lookup, aggregation, etc.; shared Plan contract across frontend and backend.
 - **Agent mode**: `/api/agent`, `/api/agent-stream` — multi-turn tool calls; per-table semantic profiling (topic/description/granularity); clarification before plan generation when ambiguous.
-- **Stack**: React 18 + Vite + AG Grid; FastAPI + uv; **LangGraph · Pydantic AI**; OpenRouter (`deepseek/deepseek-v4-pro`); SQLite request and LLM call audit.
+- **Stack**: React 18 + Vite + AG Grid; FastAPI + uv; **LangGraph · Pydantic AI**; OpenRouter (`deepseek/deepseek-v4-pro`) + local Ollama; SQLite request and LLM call audit.
 - **Documentation**: feature deep dive [`docs/features.md`](docs/features.md); technical index [`docs/README.md`](docs/README.md); Chinese README [`README.cn.md`](README.cn.md).
 
 ## Single-model phase (current)
 
-The product currently targets **one** cloud model: **`deepseek/deepseek-v4-pro`** via OpenRouter. The UI does not expose model switching. Engineering effort does **not** cover weak-model fallbacks, OpenRouter auto/free routing, user-defined model IDs, or local Ollama selection unless multi-model support becomes an explicit product decision.
+During the current development phase, the cloud path is pinned to **one** model — **`deepseek/deepseek-v4-pro`** via OpenRouter — so engineering effort isn't spent chasing weak-model fallbacks, OpenRouter auto/free routing, or user-defined model IDs this early. The UI does not expose cloud model switching.
+
+Local Ollama support is kept as-is by design, not deprecated: it exists for confidentiality-sensitive use where data must stay on-machine. It's simply not the current development focus, so the UI doesn't expose local model selection either — use it via the API (`modelSource: "local"`) or see below.
 
 ## Quick start
 
@@ -63,9 +65,9 @@ npm run dev
 
 4. Open **http://localhost:5173**, load a sample table, then **Cmd+K** → enter a prompt (e.g. `Add amount column = quantity * unit price on sales orders`) → **Generate Plan** → **Apply**. Sample prompts: [`test-data/test-prompts.md`](test-data/test-prompts.md).
 
-### Legacy: Ollama (developer-only)
+### Local: Ollama (privacy / offline use)
 
-The backend still supports local Ollama (`modelSource: local`), but the UI no longer exposes model selection. See [`docs/getting-started.md`](docs/getting-started.md) Path A if you need a keyless local path.
+The backend still fully supports local Ollama (`modelSource: local`) for cases where data must stay on-machine; the UI just doesn't expose model selection while the cloud path is single-model. See [`docs/getting-started.md`](docs/getting-started.md) Path B if you need a keyless local path.
 
 ### One-command start (optional)
 

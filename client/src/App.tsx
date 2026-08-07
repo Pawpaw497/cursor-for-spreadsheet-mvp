@@ -829,8 +829,8 @@ export default function App() {
           loadModelPreference(),
           mergeCustomModels(c, loadCustomModels())
         );
-        setModelSource("cloud");
-        setCloudModelId(c.openRouterModel);
+        setModelSource(resolved.modelSource);
+        setCloudModelId(resolved.cloudModelId);
         setLocalModelId(resolved.localModelId || c.ollamaModel || "");
       })
       .catch(() => setServerConfig(null));

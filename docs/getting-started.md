@@ -49,11 +49,11 @@ RUN_CLOUD_LLM_E2E=1 E2E_CLOUD_MODEL_ID=deepseek/deepseek-v4-pro \
   uv run pytest tests/test_cloud_llm_sample_e2e.py -q
 ```
 
-## Path B — Ollama only (legacy / developer)
+## Path B — Ollama (local)
 
-> Backend code remains; UI model switch is hidden. Not the supported product path.
+> Backend code remains fully supported; the UI just doesn't expose model selection while the cloud path is single-model.
 
-See README § Legacy: Ollama. Summary:
+See README § Local: Ollama. Summary:
 
 1. `ollama serve` and `ollama pull qwen2.5:7b`
 2. `cd server && cp .env.example .env` — `OPENROUTER_API_KEY` can stay empty; `AUTO_START_OLLAMA=1` in `.env.example` tries to start Ollama with the API.
