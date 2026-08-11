@@ -1,6 +1,7 @@
 """上游畸形响应与重试放大在真实响应路径上的行为锁定（HTTP 200 但 body 不可用）。
 
-见 .cursor/plans/llm-malformed-response-fastfail.plan.md「根因确认」。
+背景与根因确认见 https://github.com/Pawpaw497/cursor-for-spreadsheet/pull/30
+（_SafeOpenAIChatModel + asyncio.timeout 修复 finish_reason='error' 挂起）。
 
 **mock 保真度是本文件的核心约束**（2026-07-28 教训）：首版用例的 malformed fixture
 **漏了 content-type 头**，导致 openai SDK 走「非 JSON content-type → 返回原始文本」
