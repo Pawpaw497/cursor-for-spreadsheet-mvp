@@ -45,14 +45,42 @@ from app.config import settings
 from app.logging_config import get_logger
 from app.models.plan import Plan
 from app.services.audit_log import schedule_record_llm_call
-from app.services.llm import OPENROUTER_HTTP_TIMEOUT_TOOLS_S
 from app.services.llm_debug_log import build_error_payload, build_result_payload
 from app.services.llm_pydantic_ai import create_pa_agent, resolve_pa_model
 from app.services.prompts import Message, ProjectPrompt, SpreadsheetPrompt, extract_json
 
 log = get_logger("agent.pa_decision")
 
-_PA_TURN_TIMEOUT_S = OPENROUTER_HTTP_TIMEOUT_TOOLS_S + 60.0  # 90s HTTP + 60s buffer
+# 单轮时间预算。**这是实测标定出来的分配，不是算术证明**——上游的重试计数器和
+# 退避策略都是实现细节，任何闭式不等式都可能漏项（历次修订漏过 Agent 层重试、
+# 也漏过 openai SDK 约 0.5s 的重试退避睡眠）。改动任一常量、或升级
+# pydantic-ai / openai 之后，跑 `tests/test_pa_decision_timeout_budget.py` 重新标定，
+# 不要改算式。
+#
+# 当前分配：最坏 (SDK_MAX_RETRIES + 1) = 2 次 HTTP 尝试 × 60s + 退避 ≈ 120.5s，
+# 落在 150s 之内，故正常失败路径不会击穿外层 asyncio.timeout。真正的保证不是这个
+# 余量，而是 `pa_decision_step` 的 except 分支永远给出非空 reason。
+_PA_PER_ATTEMPT_TIMEOUT_S = 60.0
+_PA_TURN_TIMEOUT_S = 150.0
+
+
+def _llm_error_reason(e: BaseException) -> str:
+    """把异常转成**非空**的 ``llm_error:`` reason。
+
+    空 reason 一律视为 bug：用户拿到 ``llm_error: `` 时无法判断发生了什么，
+    线上也无从归因。裸 ``TimeoutError``（外层 ``asyncio.timeout`` 抛出的那个）
+    ``str()`` 恰好为空，是历史上空串的直接来源——2026-07-25 eval 里那次 649s
+    就是这个形态。
+
+    这是与重试配置**正交**的保证：即使将来 per-attempt / max_retries 被改回去、
+    或出现未预料的慢路径，reason 也不该再空。
+    """
+    detail = str(e).strip()
+    if detail:
+        return f"llm_error: {type(e).__name__}: {detail}"
+    if isinstance(e, TimeoutError):
+        return f"llm_error: turn timeout after {_PA_TURN_TIMEOUT_S:.0f}s"
+    return f"llm_error: {type(e).__name__} (no detail)"
 
 MAX_PLAN_VALIDATION_RETRIES = 2
 
@@ -244,7 +272,7 @@ async def _run_pa_single_turn(
         user_prompt,
         message_history=message_history or None,
         deps=deps,
-        model_settings=ModelSettings(timeout=OPENROUTER_HTTP_TIMEOUT_TOOLS_S),
+        model_settings=ModelSettings(timeout=_PA_PER_ATTEMPT_TIMEOUT_S),
     ) as run:
         async for node in run:
             if Agent.is_call_tools_node(node):
@@ -427,7 +455,7 @@ async def pa_decision_step(
             messages=audit_messages,
             error=build_error_payload(e),
         )
-        return (state, FinishAction(FinishPayload(reason=f"llm_error: {e!s}")))
+        return (state, FinishAction(FinishPayload(reason=_llm_error_reason(e))))
     except Exception as e:
         log.exception("pa_decision unexpected error err=%s", e)
         _schedule_pa_turn_audit(
@@ -436,7 +464,7 @@ async def pa_decision_step(
             messages=audit_messages,
             error=build_error_payload(e),
         )
-        return (state, FinishAction(FinishPayload(reason=f"llm_error: {e!s}")))
+        return (state, FinishAction(FinishPayload(reason=_llm_error_reason(e))))
 
     _schedule_pa_turn_audit(
         state=state,

@@ -302,6 +302,8 @@ def test_pa_decision_finish_reason_error_fast_fails() -> None:
         assert isinstance(action, FinishAction)
         assert action.payload is not None
         assert action.payload.reason.startswith("llm_error:")
+        # 空串 reason 会通过 startswith——历史上的 `llm_error: ` 正是这么漏过去的。
+        assert action.payload.reason[len("llm_error:") :].strip()
 
     asyncio.run(run())
 
@@ -327,5 +329,7 @@ def test_pa_decision_timeout_returns_finish_action() -> None:
         assert isinstance(action, FinishAction)
         assert action.payload is not None
         assert action.payload.reason.startswith("llm_error:")
+        # 空串 reason 会通过 startswith——历史上的 `llm_error: ` 正是这么漏过去的。
+        assert action.payload.reason[len("llm_error:") :].strip()
 
     asyncio.run(run())

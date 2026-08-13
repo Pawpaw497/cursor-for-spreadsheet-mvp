@@ -15,9 +15,10 @@
 1. ``content-type: application/json`` + 非法 body → 裸 ``json.JSONDecodeError`` 逃逸
    出 ``agent.run()``；它是 ``ValueError`` 子类；
 2. 该失败**不重试**（1 次请求）；但**传输层超时/连接中断**、HTTP 5xx/429 都会被
-   openai SDK 重试到 3 次（``max_retries=2``），输出校验失败再重试 1 次。其中
-   **传输层超时那条**才是 150s ``asyncio.timeout`` 被击穿、产生空串 reason 的
-   真实机制（eval 日志里并无 5xx 记录）；
+   openai SDK 按 ``SDK_MAX_RETRIES`` 重试，输出校验失败再由 Agent 层重试 1 次
+   （两层互相独立，不要用一个推另一个）。其中**传输层超时那条**才是
+   ``_PA_TURN_TIMEOUT_S`` 被击穿、产生空串 reason 的真实机制（eval 日志里并无
+   5xx 记录）；端到端复现见 ``test_pa_decision_timeout_budget.py``；
 3. ``finish_reason='error'`` 由 pydantic 的 ChatCompletion 校验拦下，
    ``_SafeOpenAIChatModel._map_finish_reason`` 真实路径上不被调用；
 4. HTTP 200 + 合法 JSON + 输出结构「可选字段缺失」→ 不报错不重试，静默空结果。
@@ -84,11 +85,12 @@ def _chat_completion(content: str, *, finish_reason: str = "stop") -> dict:
 
 
 def _expected_attempts() -> int:
-    """SDK 默认重试次数 + 1。
+    """SDK **传输层**重试次数 + 1。
 
-    重试用例一律用它而非硬编码 3，否则 openai 升级改默认值时会有多个用例同时
-    失败、看不出哪条才是根事实（根事实由
-    ``test_openai_client_default_max_retries_is_two`` 单独把关）。
+    传输层重试用例一律用它而非硬编码，否则改 ``SDK_MAX_RETRIES`` 时会有多个用例
+    同时失败、看不出哪条才是根事实（根事实由
+    ``test_openai_client_max_retries_is_pinned_explicitly`` 单独把关）。
+    **不要**拿它去推 Agent 层的 output/tool retries——两层独立。
     """
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(pa_llm.settings, "OPENROUTER_API_KEY", "sk-test")
@@ -264,13 +266,21 @@ def test_openrouter_error_envelope_in_200_body() -> None:
     assert calls == 1
 
 
-def test_openai_client_default_max_retries_is_two() -> None:
-    """显式锁定 SDK 默认值——``build_openrouter_chat_model`` 从未显式配置它。"""
+def test_openai_client_max_retries_is_pinned_explicitly() -> None:
+    """``max_retries`` 必须是显式设定值，不吃 SDK 默认的 2。
+
+    这是 PA 路径上唯一的 429/503 重试层（``llm.py`` 的 ``_post_with_retries``
+    只覆盖非 PA 调用），同时又是把单轮拖过 ``_PA_TURN_TIMEOUT_S`` 的乘数。
+    取值理由见 ``llm_pydantic_ai.SDK_MAX_RETRIES`` 的注释；本用例只防「回到默认值」。
+    """
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(pa_llm.settings, "OPENROUTER_API_KEY", "sk-test")
         model = pa_llm.build_openrouter_chat_model("test/model")
+        ollama = pa_llm.build_ollama_chat_model("test/model")
 
-    assert model.client.max_retries == 2
+    assert model.client.max_retries == pa_llm.SDK_MAX_RETRIES
+    assert ollama.client.max_retries == pa_llm.SDK_MAX_RETRIES, "本地路径须与云端对称"
+    assert pa_llm.SDK_MAX_RETRIES != 2, "2 是 SDK 默认值，说明没真正显式设定"
 
 
 def test_output_type_mismatch_is_retried_once() -> None:
@@ -285,7 +295,10 @@ def test_output_type_mismatch_is_retried_once() -> None:
 
     assert isinstance(outcome, UnexpectedModelBehavior)
     assert "output retries" in str(outcome)
-    assert calls == _expected_attempts() - 1
+    # 2 = 首次 + Agent 层 output retry。**与 SDK 的 max_retries 无关**：那是传输层
+    # 重试，这里的响应是 HTTP 200，SDK 不会重试。原先写作 `_expected_attempts() - 1`
+    # 把两层耦合在了一起，SDK 侧一改就假失败。
+    assert calls == 2
 
 
 def test_finish_reason_error_is_rejected_before_safe_model_hook() -> None:
