@@ -123,3 +123,59 @@ def test_retry_budget_finishes_before_turn_deadline(
         f"重试预算击穿了 turn deadline：{attempts} 次尝试耗时 {elapsed:.2f}s ≥ 15.0s。"
         " per-attempt 与 max_retries 的乘积须留出余量给 SDK 退避睡眠。"
     )
+
+
+def test_per_attempt_timeout_is_passed_to_model_settings() -> None:
+    """``_PA_PER_ATTEMPT_TIMEOUT_S`` 必须真的送进 ``ModelSettings(timeout=…)``。
+
+    它是与共享常量 ``OPENROUTER_HTTP_TIMEOUT_TOOLS_S`` **解耦**后的新常量：共享的那个
+    同时被 ``llm.py`` 的非 PA 路径使用，直接改会波及别处。若哪天有人把这里改回共享
+    常量，预算关系会静默变化而没有任何用例会红。
+    """
+    captured: dict[str, object] = {}
+    real_model_settings = pad.ModelSettings
+
+    def spy(**kwargs: object):
+        captured.update(kwargs)
+        return real_model_settings(**kwargs)  # type: ignore[arg-type]
+
+    class _FakeRun:
+        """``agent.iter()`` 的 run 对象：可异步迭代（立即耗尽）且能取消息。"""
+
+        def all_messages(self) -> list[object]:
+            return []
+
+        def __aiter__(self) -> "_FakeRun":
+            return self
+
+        async def __anext__(self) -> object:
+            raise StopAsyncIteration
+
+    class _FakeCM:
+        async def __aenter__(self) -> _FakeRun:
+            return _FakeRun()
+
+        async def __aexit__(self, *_exc: object) -> bool:
+            return False
+
+    class _FakeAgent:
+        def iter(self, *_args: object, **kwargs: object) -> _FakeCM:
+            captured.update(kwargs)
+            return _FakeCM()
+
+    async def run() -> None:
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(pad, "ModelSettings", spy)
+            await pad._run_pa_single_turn(
+                _FakeAgent(),  # type: ignore[arg-type]
+                user_prompt="hi",
+                message_history=[],
+                deps=None,  # type: ignore[arg-type]
+            )
+
+    asyncio.run(run())
+
+    assert captured.get("timeout") == pad._PA_PER_ATTEMPT_TIMEOUT_S
+    assert pad._PA_PER_ATTEMPT_TIMEOUT_S < pad._PA_TURN_TIMEOUT_S, (
+        "per-attempt 必须严格小于单轮上限，否则一次尝试就能吃满整个预算"
+    )
