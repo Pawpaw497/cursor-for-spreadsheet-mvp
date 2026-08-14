@@ -155,10 +155,16 @@ def extract_audit_context(
     return ctx
 
 
+# Strong references to in-flight audit tasks. ``loop.create_task`` only keeps a weak
+# reference, so a caller that drops the returned task lets the GC collect it mid-flight
+# -- an audit row would vanish with no log line at all. Entries remove themselves on
+# completion, so the set stays bounded by the number of concurrent audit writes.
+_background_tasks: set[asyncio.Task[Any]] = set()
+
+
 def _schedule(coro: Any) -> None:
     try:
         loop = asyncio.get_running_loop()
-        loop.create_task(coro)
     except RuntimeError:
         import threading
 
@@ -169,6 +175,39 @@ def _schedule(coro: Any) -> None:
                 log.warning("audit_log background write failed: %s", e)
 
         threading.Thread(target=_run, daemon=True).start()
+        return
+
+    task = loop.create_task(coro)
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+
+
+async def drain_background_tasks(timeout: float = 30.0) -> None:
+    """Await audit writes scheduled on the running loop; never raises.
+
+    Exists so callers (tests, shutdown paths) can wait deterministically instead of
+    guessing a sleep duration -- ``_insert_with_retry`` backs off up to 1s per attempt.
+    Task failures are already downgraded to WARNING inside ``record_*``; anything left
+    is swallowed here so draining cannot break the fire-and-forget contract.
+    """
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while True:
+        pending = [
+            t
+            for t in _background_tasks
+            if not t.done() and t.get_loop() is loop
+        ]
+        if not pending:
+            return
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            log.warning(
+                "drain_background_tasks timed out with %d audit write(s) pending",
+                len(pending),
+            )
+            return
+        await asyncio.wait(pending, timeout=remaining)
 
 
 # Bounded retry for lock contention the engine's busy_timeout could not absorb (e.g.

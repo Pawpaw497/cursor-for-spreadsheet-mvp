@@ -22,7 +22,13 @@ from app.services import audit_log as audit_mod
 
 
 async def _flush_audit_tasks() -> None:
-    await asyncio.sleep(0.05)
+    """Wait for scheduled audit writes to finish, deterministically.
+
+    A fixed sleep raced with ``_insert_with_retry``: its first backoff alone is 50ms
+    (``min(0.05 * 2**attempt, 1.0)``), so any lock contention on a loaded CI runner
+    blew past a 50ms window and the row was not yet visible when the assertion ran.
+    """
+    await audit_mod.drain_background_tasks(timeout=30.0)
 
 
 def _schedule_audit_sync(**kwargs: object) -> None:
@@ -310,6 +316,70 @@ def test_audit_write_survives_write_lock_held_past_default_budget(
         )
 
     asyncio.run(check())
+
+
+def test_schedule_keeps_strong_reference_until_task_finishes() -> None:
+    """``loop.create_task`` only weak-refs the task; audit rows must not be GC-able."""
+    import gc
+
+    started = asyncio.Event()
+    release = asyncio.Event()
+    finished: list[str] = []
+
+    async def slow_write() -> None:
+        started.set()
+        await release.wait()
+        finished.append("done")
+
+    async def run() -> None:
+        audit_mod._schedule(slow_write())
+        await started.wait()
+        gc.collect()
+        assert audit_mod._background_tasks, (
+            "no strong reference held for an in-flight audit write"
+        )
+        release.set()
+        await audit_mod.drain_background_tasks(timeout=5.0)
+        assert finished == ["done"]
+        assert not audit_mod._background_tasks, "completed task not discarded"
+
+    asyncio.run(run())
+
+
+def test_drain_background_tasks_swallows_write_failures() -> None:
+    """Draining must preserve fire-and-forget: a failed audit write never propagates."""
+
+    async def boom() -> None:
+        raise OSError("audit write failed")
+
+    async def run() -> None:
+        audit_mod._schedule(boom())
+        await audit_mod.drain_background_tasks(timeout=5.0)
+        assert not audit_mod._background_tasks
+
+    asyncio.run(run())
+
+
+def test_drain_background_tasks_ignores_tasks_from_other_loops() -> None:
+    """A leftover task from a closed loop must not make a later drain hang or raise."""
+    stale = asyncio.new_event_loop()
+    try:
+        async def _park() -> None:
+            await asyncio.get_running_loop().create_future()
+
+        task = stale.create_task(_park())
+        stale.run_until_complete(asyncio.sleep(0))  # let the coroutine start
+        audit_mod._background_tasks.add(task)
+
+        async def run() -> None:
+            await audit_mod.drain_background_tasks(timeout=1.0)
+
+        asyncio.run(run())
+    finally:
+        audit_mod._background_tasks.discard(task)
+        task.cancel()
+        stale.run_until_complete(asyncio.gather(task, return_exceptions=True))
+        stale.close()
 
 
 def test_workspace_key_stored_as_hash_only() -> None:
