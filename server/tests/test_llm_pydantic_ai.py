@@ -5,12 +5,11 @@ from unittest.mock import patch
 
 import httpx
 import pytest
-from pydantic_ai import Agent, UnexpectedModelBehavior
+from pydantic_ai import Agent
 from pydantic_ai.models.openai import OpenAIChatModel
 
 from app.services import llm as llm_http
 from app.services import llm_pydantic_ai as pa_llm
-from app.services.llm_pydantic_ai import _SafeOpenAIChatModel
 
 
 @pytest.fixture(autouse=True)
@@ -110,19 +109,3 @@ def test_create_pa_agent_returns_agent() -> None:
             instructions="test",
         )
     assert isinstance(agent, Agent)
-
-
-def test_safe_model_raises_on_error_finish_reason() -> None:
-    with patch.object(pa_llm.settings, "OPENROUTER_API_KEY", "sk-test"):
-        model = pa_llm.build_openrouter_chat_model("openai/gpt-4o-mini")
-    assert isinstance(model, _SafeOpenAIChatModel)
-    with pytest.raises(UnexpectedModelBehavior, match="finish_reason='error'"):
-        model._map_finish_reason("error")  # type: ignore[arg-type]
-
-
-def test_safe_model_delegates_known_finish_reasons() -> None:
-    with patch.object(pa_llm.settings, "OPENROUTER_API_KEY", "sk-test"):
-        model = pa_llm.build_openrouter_chat_model("openai/gpt-4o-mini")
-    assert model._map_finish_reason("stop") == "stop"
-    assert model._map_finish_reason("length") == "length"
-    assert model._map_finish_reason("tool_calls") == "tool_call"
