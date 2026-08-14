@@ -29,4 +29,5 @@ pythonpath = ["."]
 testpaths = ["tests"]
 markers = [
     "integration: optional tests hitting real network (e.g. cloud LLM)",
+    "slow: local-only tests that sleep on purpose (timeout budget calibration)",
 ]

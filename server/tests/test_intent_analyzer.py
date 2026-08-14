@@ -273,3 +273,56 @@ def test_node_intent_graph_roundtrip_refreshes_profile_message(
         assert "topic: 订单" in profile_msg["content"]
     finally:
         reset_data_store_for_tests()
+
+
+def test_classify_wall_clock_is_bounded_by_per_request_timeout() -> None:
+    """intent 的总耗时被 ``(SDK_MAX_RETRIES + 1) × INTENT_TIMEOUT_S`` 封顶。
+
+    ``analyze_intent`` 没有外层 ``asyncio.wait_for``，也**不需要**：per-request 上限
+    （``ModelSettings(timeout=INTENT_TIMEOUT_S)``，2026-07-23 #44 引入）配上钉死的
+    SDK 传输层重试次数，wall-clock 已经有界。本用例把这个「两个常量共同封顶」的关系
+    锁住——任何一个被改回默认值，上界都会变，这里会红。
+
+    按 1/100 缩放跑，只验关系不验绝对值。
+    """
+    import time
+
+    import httpx
+
+    from app.services import llm as llm_http
+    from app.services import llm_pydantic_ai as pa_llm
+
+    per_request = 0.05
+    attempts = {"n": 0}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        attempts["n"] += 1
+        await asyncio.sleep(per_request)
+        raise httpx.ReadTimeout("simulated hang", request=request)
+
+    async def run() -> float:
+        client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        llm_http.set_shared_llm_http_client(client)
+        t0 = time.perf_counter()
+        try:
+            await ia.classify_table_intents(
+                [_profile("Sheet1")], {"Sheet1": "t1"}, "cloud",
+                cloud_model_id="test/model",
+            )
+        except Exception:  # noqa: BLE001 — fail-open 在更上层，这里只测耗时
+            pass
+        finally:
+            elapsed = time.perf_counter() - t0
+            llm_http.set_shared_llm_http_client(None)
+            await client.aclose()
+        return elapsed
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(pa_llm.settings, "OPENROUTER_API_KEY", "sk-test")
+        mp.setattr(ia, "INTENT_TIMEOUT_S", per_request)
+        elapsed = asyncio.run(run())
+
+    max_attempts = pa_llm.SDK_MAX_RETRIES + 1
+    assert attempts["n"] <= max_attempts
+    # 留出退避睡眠的余量：只验「被 per-request × 尝试次数 封顶」这个数量级关系。
+    assert elapsed < per_request * max_attempts + 2.0

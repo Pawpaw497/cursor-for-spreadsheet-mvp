@@ -302,6 +302,8 @@ def test_pa_decision_finish_reason_error_fast_fails() -> None:
         assert isinstance(action, FinishAction)
         assert action.payload is not None
         assert action.payload.reason.startswith("llm_error:")
+        # 空串 reason 会通过 startswith——历史上的 `llm_error: ` 正是这么漏过去的。
+        assert action.payload.reason[len("llm_error:") :].strip()
 
     asyncio.run(run())
 
@@ -327,5 +329,40 @@ def test_pa_decision_timeout_returns_finish_action() -> None:
         assert isinstance(action, FinishAction)
         assert action.payload is not None
         assert action.payload.reason.startswith("llm_error:")
+        # 空串 reason 会通过 startswith——历史上的 `llm_error: ` 正是这么漏过去的。
+        assert action.payload.reason[len("llm_error:") :].strip()
 
     asyncio.run(run())
+
+
+def test_llm_error_reason_is_never_empty_by_category() -> None:
+    """``_llm_error_reason`` 对各类上游故障都产出**非空且带类型**的 reason。
+
+    分类不是为了好看：线上只有这一行字符串可归因。三类是 eval 里真实见过的形态
+    （JSON body 不合法 / 模型行为异常 / 传输层故障），第四类是历史上产生空串的
+    那个——裸 ``TimeoutError`` 的 ``str()`` 恰好为空。
+    """
+    import json as _json
+
+    from pydantic_ai import UnexpectedModelBehavior as _UMB
+
+    from app.agent.pa_decision import _PA_TURN_TIMEOUT_S, _llm_error_reason
+
+    cases = [
+        _json.JSONDecodeError("Expecting value", "", 0),
+        _UMB("Invalid response from openrouter"),
+        ValueError("boom"),
+    ]
+    for err in cases:
+        reason = _llm_error_reason(err)
+        detail = reason[len("llm_error:") :].strip()
+        assert detail, f"{type(err).__name__} 产出了空 reason"
+        assert type(err).__name__ in reason, f"reason 应带上异常类型：{reason!r}"
+
+    # 裸 TimeoutError：str() 为空，必须由 fallback 兜出可读文案。
+    timeout_reason = _llm_error_reason(TimeoutError())
+    assert timeout_reason[len("llm_error:") :].strip()
+    assert f"{_PA_TURN_TIMEOUT_S:.0f}s" in timeout_reason
+
+    # 任何没有 message 的异常都不该退化成空串。
+    assert _llm_error_reason(RuntimeError())[len("llm_error:") :].strip()

@@ -90,9 +90,13 @@ def test_build_chat_model_passes_shared_http_client() -> None:
                 wraps=RealOpenRouterProvider,
             ) as provider_cls,
         ):
-            pa_llm.build_chat_model("cloud", cloud_model_id="openai/gpt-4o-mini")
+            model = pa_llm.build_chat_model("cloud", cloud_model_id="openai/gpt-4o-mini")
         provider_cls.assert_called_once()
-        assert provider_cls.call_args.kwargs["http_client"] is client
+        # 为了注入 max_retries，共享 client 现在传给自建的 AsyncOpenAI，
+        # provider 只收 openai_client=（它对 openai_client 与 http_client 二选一）。
+        assert "http_client" not in provider_cls.call_args.kwargs
+        assert provider_cls.call_args.kwargs["openai_client"]._client is client
+        assert model.client._client is client
     finally:
         llm_http.set_shared_llm_http_client(None)
         asyncio.run(client.aclose())
