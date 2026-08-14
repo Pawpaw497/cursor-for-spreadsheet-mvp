@@ -1,7 +1,7 @@
 """上游畸形响应与重试放大在真实响应路径上的行为锁定（HTTP 200 但 body 不可用）。
 
 背景与根因确认见 https://github.com/Pawpaw497/cursor-for-spreadsheet/pull/30
-（_SafeOpenAIChatModel + asyncio.timeout 修复 finish_reason='error' 挂起）。
+（`pa_decision` 的 asyncio.timeout 兜底修复 finish_reason='error' 挂起）。
 
 **mock 保真度是本文件的核心约束**（2026-07-28 教训）：首版用例的 malformed fixture
 **漏了 content-type 头**，导致 openai SDK 走「非 JSON content-type → 返回原始文本」
@@ -19,8 +19,9 @@
    （两层互相独立，不要用一个推另一个）。其中**传输层超时那条**才是
    ``_PA_TURN_TIMEOUT_S`` 被击穿、产生空串 reason 的真实机制（eval 日志里并无
    5xx 记录）；端到端复现见 ``test_pa_decision_timeout_budget.py``；
-3. ``finish_reason='error'`` 由 pydantic 的 ChatCompletion 校验拦下，
-   ``_SafeOpenAIChatModel._map_finish_reason`` 真实路径上不被调用；
+3. ``finish_reason='error'`` 由 pydantic 的 ChatCompletion 校验拦下，请求根本到不了
+   模型层的 finish_reason 映射（PR #30 曾为此加的 ``_SafeOpenAIChatModel`` override
+   因而是死代码，已在 PR2 删除）；
 4. HTTP 200 + 合法 JSON + 输出结构「可选字段缺失」→ 不报错不重试，静默空结果。
 """
 from __future__ import annotations
@@ -188,9 +189,9 @@ def test_content_type_governs_which_failure_path() -> None:
     )
     without_ct, _ = _run_against(lambda: httpx.Response(200, content=b""))
 
+    # 只断言异常**类型**：具体消息串来自 pydantic-ai 内部，上游改文案会造成假失败。
     assert isinstance(with_ct, json.JSONDecodeError)
     assert isinstance(without_ct, UnexpectedModelBehavior)
-    assert "expected JSON data" in str(without_ct)
     assert type(with_ct) is not type(without_ct)
 
 
@@ -301,33 +302,25 @@ def test_output_type_mismatch_is_retried_once() -> None:
     assert calls == 2
 
 
-def test_finish_reason_error_is_rejected_before_safe_model_hook() -> None:
+def test_finish_reason_error_is_rejected_by_schema_validation() -> None:
     """``finish_reason='error'`` 被 pydantic 的 ChatCompletion 校验先拦下。
 
-    即 ``_SafeOpenAIChatModel._map_finish_reason`` 在真实路径上**不会被调用**
-    （PR #30 的 override 是死代码）。若 SDK 未来放宽该字段校验，本用例的 spy
-    断言会失败，提示 override 重新变成活代码、需复核。
+    请求因此根本走不到模型层的 finish_reason 映射——PR #30 为此加的
+    ``_SafeOpenAIChatModel._map_finish_reason`` override 在真实路径上不可达，
+    已于 PR2 删除。本用例继续钉住「校验层拦截」这个事实：若 SDK 未来放宽该字段
+    校验，这里会先红，提示需要重新评估是否要在模型层兜底。
     """
-    seen: list[object] = []
-    original = pa_llm._SafeOpenAIChatModel._map_finish_reason
-
-    def spy(self, key):  # type: ignore[no-untyped-def]
-        seen.append(key)
-        return original(self, key)
-
-    with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(pa_llm._SafeOpenAIChatModel, "_map_finish_reason", spy)
-        outcome, _ = _run_against(
-            lambda: httpx.Response(
-                200,
-                json=_chat_completion(VALID_OUTPUT, finish_reason="error"),
-                headers=JSON_CT,
-            )
+    outcome, calls = _run_against(
+        lambda: httpx.Response(
+            200,
+            json=_chat_completion(VALID_OUTPUT, finish_reason="error"),
+            headers=JSON_CT,
         )
+    )
 
     assert isinstance(outcome, UnexpectedModelBehavior)
     assert "finish_reason" in str(outcome)
-    assert seen == [], "当前 SDK 下 _map_finish_reason 不应被走到"
+    assert calls == 1, "校验失败不触发 SDK 重试"
 
 
 def test_valid_response_produces_output() -> None:
